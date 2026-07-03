@@ -1,3 +1,3 @@
-//! Re-exports for user convenience.
+//! Re-exports.
 
-pub use crate::protocol::{ProtocolStep, ShellAction};
+pub use crate::protocol::ShellAction;

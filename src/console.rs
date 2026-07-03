@@ -39,9 +39,15 @@ impl InputSource for StdinInput {
     }
 }
 
-/// Collects output into a Vec — for testing and TUI buffer mode.
+/// Collects output into a Vec — for testing.
 pub struct BufferConsole {
     pub lines: Vec<String>,
+}
+
+impl Default for BufferConsole {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BufferConsole {
@@ -56,5 +62,14 @@ impl Console for BufferConsole {
     }
     fn print_error(&mut self, text: &str) {
         self.lines.push(format!("Error: {text}"));
+    }
+}
+
+/// No-op input source for tests that don't need interactive prompts.
+pub struct NoInput;
+
+impl InputSource for NoInput {
+    fn read_line(&mut self, _prompt: &str) -> Result<String, String> {
+        Err("no input available".into())
     }
 }

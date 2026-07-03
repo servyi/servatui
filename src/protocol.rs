@@ -1,8 +1,13 @@
-//! Builder chain: Plugin → Client<T> ⇄ Server<T> → Protocol
+//! Builder chain: Plugin → Client ⇄ Server → Protocol
 //!
-//! The type alternates Client → Server → Client → Server → ...
-//! You cannot call .client() on Server or .server() on Client.
-//! The Rust compiler enforces the alternation.
+//! Wire protocol (alternating C→S, S→C):
+//!   C→S: command name (string)
+//!   C→S: output of client step 1
+//!   S→C: output of server step 1
+//!   C→S: output of client step 2
+//!   S→C: output of server step 2
+//!   ...
+//!   C→S: sentinel ()
 
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -13,387 +18,273 @@ use crate::connection::{RawConnection, TypedConnection};
 use crate::console::{Console, InputSource};
 
 // ═══════════════════════════════════════════════════════════════
-// Core traits
+// Core types
 // ═══════════════════════════════════════════════════════════════
 
-/// What a plugin returns after the conversation completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShellAction {
-    Continue,
-    Exit,
-}
+pub enum ShellAction { Continue, Exit }
 
-/// Non-generic trait (erased via dyn). Each concrete step implementation
-/// handles its own serialization/deserialization internally via Connection.
-pub trait ProtocolStep<Ctx: Send, ClientCtx: Send>: Send + Sync {
-    fn client(
-        &self,
-        cctx: &mut ClientCtx,
-        conn: &mut dyn RawConnection,
-        out: &mut dyn Console,
-        input: &mut dyn InputSource,
-    ) -> Result<(), String>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepKind { Client, Server, Finalize }
 
-    fn server(&self, ctx: &mut Ctx, conn: &mut dyn RawConnection) -> Result<(), String>;
+/// Type-erased step stored in a Vec. Each step handles its own ser/deser.
+/// Input/output are raw bytes; the concrete step impl deserializes/serializes.
+trait ErasedStep: Send + Sync {
+    fn kind(&self) -> StepKind;
+
+    /// Client-side: deserialize input, run closure (Console+InputSource), serialize output.
+    fn client_exec(&self, input: &[u8], out: &mut dyn Console, input_src: &mut dyn InputSource) -> Result<Vec<u8>, String>;
+
+    /// Server-side: deserialize input, run closure, serialize output.
+    fn server_exec(&self, input: &[u8]) -> Result<Vec<u8>, String>;
 }
 
 // ═══════════════════════════════════════════════════════════════
 // Concrete step implementations
 // ═══════════════════════════════════════════════════════════════
 
-/// A client-side step: receives T from wire, runs closure, sends U to wire.
-/// Created by `Client<T>.client::<U>(closure)`.
-pub struct StepClient<Ctx: Send, ClientCtx: Send, T, U, F, Next> {
-    pub closure: F,
-    pub next: Next,
-    _ph: PhantomData<fn(T, U, Ctx, ClientCtx)>,
-}
+struct ClientStepE<T, U, F> { closure: F, _ph: PhantomData<fn(T, U)> }
 
-/// A server-side step: receives T from wire, runs closure with Ctx, sends U.
-/// Created by `Server<T>.server::<U>(closure)`.
-pub struct StepServer<Ctx: Send, ClientCtx: Send, T, U, F, Next> {
-    pub closure: F,
-    pub next: Next,
-    _ph: PhantomData<fn(T, U, Ctx, ClientCtx)>,
-}
-
-/// Terminal node: receives T from wire, runs finalize closure.
-/// Created by `Client<T>.finalize(closure)` or `Server<T>.finalize(closure)`.
-pub struct StepFinalize<Ctx: Send, ClientCtx: Send, T, F> {
-    pub closure: F,
-    _ph: PhantomData<fn(T, Ctx, ClientCtx)>,
-}
-
-// ── ProtocolStep impls ──────────────────────────────────────────
-
-impl<Ctx, ClientCtx, T, U, F, Next> ProtocolStep<Ctx, ClientCtx>
-    for StepClient<Ctx, ClientCtx, T, U, F, Next>
+impl<T, U, F> ErasedStep for ClientStepE<T, U, F>
 where
-    Ctx: Send + Sync,
-    ClientCtx: Send + Sync,
     T: Serialize + DeserializeOwned + Send + Sync + 'static,
     U: Serialize + DeserializeOwned + Send + Sync + 'static,
-    F: Fn(T, &mut ClientCtx, &mut dyn Console, &mut dyn InputSource) -> Result<U, String>
-        + Send
-        + Sync,
-    Next: ProtocolStep<Ctx, ClientCtx>,
+    F: Fn(T, &mut dyn Console, &mut dyn InputSource) -> Result<U, String> + Send + Sync + 'static,
 {
-    fn client(
-        &self,
-        cctx: &mut ClientCtx,
-        conn: &mut dyn RawConnection,
-        out: &mut dyn Console,
-        input: &mut dyn InputSource,
-    ) -> Result<(), String> {
-        let data: T = conn.recv_typed()?;
-        let result: U = (self.closure)(data, cctx, out, input)?;
-        conn.send_typed(&result)?;
-        self.next.client(cctx, conn, out, input)
+    fn kind(&self) -> StepKind { StepKind::Client }
+    fn client_exec(&self, input: &[u8], out: &mut dyn Console, input_src: &mut dyn InputSource) -> Result<Vec<u8>, String> {
+        let data: T = serde_json::from_slice(input).map_err(|e| e.to_string())?;
+        let result: U = (self.closure)(data, out, input_src)?;
+        serde_json::to_vec(&result).map_err(|e| e.to_string())
     }
-
-    fn server(&self, ctx: &mut Ctx, conn: &mut dyn RawConnection) -> Result<(), String> {
-        // Client step on server: receive U from wire, pass to next.
-        let _data: U = conn.recv_typed()?;
-        self.next.server(ctx, conn)
+    fn server_exec(&self, _input: &[u8]) -> Result<Vec<u8>, String> {
+        unreachable!("server_exec called on client step")
     }
 }
 
-impl<Ctx, ClientCtx, T, U, F, Next> ProtocolStep<Ctx, ClientCtx>
-    for StepServer<Ctx, ClientCtx, T, U, F, Next>
+struct ServerStepE<T, U, F> { closure: F, _ph: PhantomData<fn(T, U)> }
+
+impl<T, U, F> ErasedStep for ServerStepE<T, U, F>
 where
-    Ctx: Send + Sync,
-    ClientCtx: Send + Sync,
     T: Serialize + DeserializeOwned + Send + Sync + 'static,
     U: Serialize + DeserializeOwned + Send + Sync + 'static,
-    F: Fn(T, &mut Ctx) -> Result<U, String> + Send + Sync,
-    Next: ProtocolStep<Ctx, ClientCtx>,
+    F: Fn(T) -> Result<U, String> + Send + Sync + 'static,
 {
-    fn client(
-        &self,
-        cctx: &mut ClientCtx,
-        conn: &mut dyn RawConnection,
-        out: &mut dyn Console,
-        input: &mut dyn InputSource,
-    ) -> Result<(), String> {
-        // Server step on client: receive U from wire, pass to next.
-        let _data: U = conn.recv_typed()?;
-        self.next.client(cctx, conn, out, input)
+    fn kind(&self) -> StepKind { StepKind::Server }
+    fn client_exec(&self, _input: &[u8], _out: &mut dyn Console, _input_src: &mut dyn InputSource) -> Result<Vec<u8>, String> {
+        unreachable!("client_exec called on server step")
     }
-
-    fn server(&self, ctx: &mut Ctx, conn: &mut dyn RawConnection) -> Result<(), String> {
-        let data: T = conn.recv_typed()?;
-        let result: U = (self.closure)(data, ctx)?;
-        conn.send_typed(&result)?;
-        self.next.server(ctx, conn)
+    fn server_exec(&self, input: &[u8]) -> Result<Vec<u8>, String> {
+        let data: T = serde_json::from_slice(input).map_err(|e| e.to_string())?;
+        let result: U = (self.closure)(data)?;
+        serde_json::to_vec(&result).map_err(|e| e.to_string())
     }
 }
 
-impl<Ctx, ClientCtx, T, F> ProtocolStep<Ctx, ClientCtx> for StepFinalize<Ctx, ClientCtx, T, F>
-where
-    Ctx: Send + Sync,
-    ClientCtx: Send + Sync,
-    T: Serialize + DeserializeOwned + Send + Sync + 'static,
-    F: Fn(&mut ClientCtx) -> Result<ShellAction, String> + Send + Sync,
-{
-    fn client(
-        &self,
-        cctx: &mut ClientCtx,
-        conn: &mut dyn RawConnection,
-        _out: &mut dyn Console,
-        _input: &mut dyn InputSource,
-    ) -> Result<(), String> {
-        // Finalize: the T was consumed by the previous step's closure.
-        // We receive a sentinel () and produce the ShellAction.
-        let _sentinel: () = conn.recv_typed()?;
-        let _action = (self.closure)(cctx)?;
-        Ok(())
-    }
+struct FinalizeStepE<F> { closure: F }
 
-    fn server(&self, _ctx: &mut Ctx, conn: &mut dyn RawConnection) -> Result<(), String> {
-        // Server side: wait for client's sentinel, then done.
-        let _sentinel: () = conn.recv_typed()?;
-        Ok(())
+impl<F> ErasedStep for FinalizeStepE<F>
+where
+    F: Fn() -> Result<ShellAction, String> + Send + Sync + 'static,
+{
+    fn kind(&self) -> StepKind { StepKind::Finalize }
+    fn client_exec(&self, _input: &[u8], _out: &mut dyn Console, _input_src: &mut dyn InputSource) -> Result<Vec<u8>, String> {
+        let _action = (self.closure)()?;
+        Ok(Vec::new())
+    }
+    fn server_exec(&self, _input: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(Vec::new())
     }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Builder types
+// Builder chain (type-state)
 // ═══════════════════════════════════════════════════════════════
 
-/// Entry point for defining a protocol.
 pub struct Plugin;
 
 impl Plugin {
-    /// Create a new protocol with the given command name and help text.
     pub fn new(name: &'static str, help: &'static str) -> ParseBuilder {
         ParseBuilder { name, help }
     }
 }
 
-/// Intermediate builder: holds name + help, waiting for parse closure.
-pub struct ParseBuilder {
-    name: &'static str,
-    help: &'static str,
-}
+pub struct ParseBuilder { name: &'static str, help: &'static str }
 
 impl ParseBuilder {
-    /// Provide the parser closure: &str → T.
-    /// Returns Client<T> — the start of the alternation chain.
     pub fn parse<T, F>(self, parse: F) -> ClientHead<T>
     where
         T: Serialize + DeserializeOwned + Send + Sync + 'static,
         F: Fn(&str) -> Result<T, String> + Send + Sync + 'static,
     {
+        let parse_bytes: Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync> =
+            Arc::new(move |s: &str| {
+                let t: T = parse(s)?;
+                serde_json::to_vec(&t).map_err(|e| e.to_string())
+            });
         ClientHead {
             name: self.name,
             help: self.help,
-            parse: Arc::new(parse),
+            parse: parse_bytes,
+            steps: Vec::new(),
             _ph: PhantomData,
         }
     }
 }
 
-/// Starting point of the chain — holds the parse closure.
-/// Client<T> can call .client() or .finalize().
-pub struct ClientHead<T> {
+/// Client position. Can call .client() or .finalize().
+pub struct Client<T> {
     name: &'static str,
     help: &'static str,
-    parse: Arc<dyn Fn(&str) -> Result<T, String> + Send + Sync>,
+    parse: Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>,
+    steps: Vec<Box<dyn ErasedStep>>,
     _ph: PhantomData<T>,
 }
 
-impl<T> ClientHead<T>
+pub type ClientHead<T> = Client<T>;
+pub type ClientBuilder<T> = Client<T>;
+
+impl<T> Client<T>
 where
     T: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
-    /// Client-side step: T → U.
-    /// Closure receives T, ClientCtx, Console, InputSource and produces U.
-    /// Result U is serialized and sent to the server.
-    /// Returns Server<U> — you must now call .server() or .finalize().
-    pub fn client<U, F>(
-        self,
-        f: F,
-    ) -> ServerBuilder<
-        StepClient<(), (), T, U, F, ParseStep<T>>,
-    >
+    pub fn client<U, F>(mut self, f: F) -> Server<U>
     where
         U: Serialize + DeserializeOwned + Send + Sync + 'static,
-        F: Fn(T, &mut (), &mut dyn Console, &mut dyn InputSource) -> Result<U, String>
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(T, &mut dyn Console, &mut dyn InputSource) -> Result<U, String> + Send + Sync + 'static,
     {
-        // The parse step is the head; this client step follows.
-        let head = ParseStep {
-            parse: self.parse.clone(),
-            _ph: PhantomData,
-        };
-        let step = StepClient {
-            closure: f,
-            next: head,
-            _ph: PhantomData,
-        };
-        ServerBuilder {
-            name: self.name,
-            help: self.help,
-            step,
+        self.steps.push(Box::new(ClientStepE::<T, U, F> { closure: f, _ph: PhantomData }));
+        Server {
+            name: self.name, help: self.help, parse: self.parse,
+            steps: self.steps, _ph: PhantomData,
+        }
+    }
+
+    pub fn finalize<F>(mut self, f: F) -> Protocol
+    where
+        F: Fn() -> Result<ShellAction, String> + Send + Sync + 'static,
+    {
+        self.steps.push(Box::new(FinalizeStepE { closure: f }));
+        Protocol {
+            name: self.name, help: self.help,
+            parse: self.parse, steps: self.steps,
         }
     }
 }
 
-/// A client-side step in the chain. Type parameter T is the current data.
-/// Can call .client() to do another client step, or .finalize().
-///
-/// Note: you reach this after a Server<T> step.
-pub struct ClientBuilder<Step> {
+/// Server position. Can call .server() or .finalize().
+pub struct Server<T> {
     name: &'static str,
     help: &'static str,
-    step: Step,
-}
-
-/// A server-side step in the chain. Type parameter T is the current data.
-/// Can call .server() to do another server step, or .finalize().
-pub struct ServerBuilder<Step> {
-    name: &'static str,
-    help: &'static str,
-    step: Step,
-}
-
-impl<Ctx, ClientCtx, T, U, F, Next> ServerBuilder<StepClient<Ctx, ClientCtx, T, U, F, Next>>
-where
-    Ctx: Send + Sync + 'static,
-    ClientCtx: Send + Sync + 'static,
-    T: Serialize + DeserializeOwned + Send + Sync + 'static,
-    U: Serialize + DeserializeOwned + Send + Sync + 'static,
-    F: Fn(T, &mut ClientCtx, &mut dyn Console, &mut dyn InputSource) -> Result<U, String>
-        + Send
-        + Sync
-        + 'static,
-    Next: ProtocolStep<Ctx, ClientCtx>,
-{
-    /// Server-side step: receive U from wire, run closure with &mut Ctx, send V.
-    /// Returns ClientBuilder — you must now call .client() or .finalize().
-    pub fn server<V, G>(
-        self,
-        g: G,
-    ) -> ClientBuilder<StepServer<Ctx, ClientCtx, U, V, G, StepClient<Ctx, ClientCtx, T, U, F, Next>>>
-    where
-        V: Serialize + DeserializeOwned + Send + Sync + 'static,
-        G: Fn(U, &mut Ctx) -> Result<V, String> + Send + Sync + 'static,
-    {
-        let step = StepServer {
-            closure: g,
-            next: self.step,
-            _ph: PhantomData,
-        };
-        ClientBuilder {
-            name: self.name,
-            help: self.help,
-            step,
-        }
-    }
-
-    /// Finalize from a Server builder position.
-    /// Note: you can only finalize from a Client position (after the server
-    /// step sends data back). If you're at a Server builder, the previous
-    /// Client step's data is already on the wire — finalize here doesn't
-    /// make sense. Use .server() first.
-    pub fn finalize(self) -> Protocol {
-        // This is a terminal state that shouldn't normally be reached.
-        // The chain should end with Client.finalize().
-        // But we provide it for flexibility.
-        Protocol {
-            name: self.name,
-            help: self.help,
-        }
-    }
-}
-
-impl<Ctx, ClientCtx, T, U, F, Next> ClientBuilder<StepServer<Ctx, ClientCtx, T, U, F, Next>>
-where
-    Ctx: Send + Sync + 'static,
-    ClientCtx: Send + Sync + 'static,
-    T: Serialize + DeserializeOwned + Send + Sync + 'static,
-    U: Serialize + DeserializeOwned + Send + Sync + 'static,
-    F: Fn(T, &mut Ctx) -> Result<U, String> + Send + Sync + 'static,
-    Next: ProtocolStep<Ctx, ClientCtx>,
-{
-    /// Client-side step: receive U from wire, run closure, send V.
-    /// Returns ServerBuilder — you must now call .server() or .finalize().
-    pub fn client<V, G>(
-        self,
-        g: G,
-    ) -> ServerBuilder<StepClient<Ctx, ClientCtx, U, V, G, StepServer<Ctx, ClientCtx, T, U, F, Next>>>
-    where
-        V: Serialize + DeserializeOwned + Send + Sync + 'static,
-        G: Fn(U, &mut ClientCtx, &mut dyn Console, &mut dyn InputSource) -> Result<V, String>
-            + Send
-            + Sync
-            + 'static,
-    {
-        let step = StepClient {
-            closure: g,
-            next: self.step,
-            _ph: PhantomData,
-        };
-        ServerBuilder {
-            name: self.name,
-            help: self.help,
-            step,
-        }
-    }
-
-    /// Finalize: terminal node. Receives sentinel, produces ShellAction.
-    pub fn finalize<H>(self, _h: H) -> Protocol
-    where
-        H: Fn(&mut ClientCtx) -> Result<ShellAction, String> + Send + Sync + 'static,
-    {
-        Protocol {
-            name: self.name,
-            help: self.help,
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Parse step — the head of the chain
-// ═══════════════════════════════════════════════════════════════
-
-/// The head of the linked list: holds the parse closure.
-/// On the client side, it parses args and sends T.
-/// On the server side, it receives T and passes to the next step.
-pub struct ParseStep<T> {
-    parse: Arc<dyn Fn(&str) -> Result<T, String> + Send + Sync>,
+    parse: Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>,
+    steps: Vec<Box<dyn ErasedStep>>,
     _ph: PhantomData<T>,
 }
 
-impl<Ctx: Send + Sync, ClientCtx: Send + Sync, T> ProtocolStep<Ctx, ClientCtx> for ParseStep<T>
+pub type ServerBuilder<T> = Server<T>;
+
+impl<T> Server<T>
 where
     T: Serialize + DeserializeOwned + Send + Sync + 'static,
 {
-    fn client(
-        &self,
-        _cctx: &mut ClientCtx,
-        _conn: &mut dyn RawConnection,
-        _out: &mut dyn Console,
-        _input: &mut dyn InputSource,
-    ) -> Result<(), String> {
-        // ParseStep is the terminal of the reversed linked list.
-        // The actual parsing happens in the entry point, not here.
-        Ok(())
+    pub fn server<U, F>(mut self, f: F) -> Client<U>
+    where
+        U: Serialize + DeserializeOwned + Send + Sync + 'static,
+        F: Fn(T) -> Result<U, String> + Send + Sync + 'static,
+    {
+        self.steps.push(Box::new(ServerStepE::<T, U, F> { closure: f, _ph: PhantomData }));
+        Client {
+            name: self.name, help: self.help, parse: self.parse,
+            steps: self.steps, _ph: PhantomData,
+        }
     }
 
-    fn server(&self, _ctx: &mut Ctx, _conn: &mut dyn RawConnection) -> Result<(), String> {
-        Ok(())
+    pub fn finalize<F>(mut self, f: F) -> Protocol
+    where
+        F: Fn() -> Result<ShellAction, String> + Send + Sync + 'static,
+    {
+        self.steps.push(Box::new(FinalizeStepE { closure: f }));
+        Protocol {
+            name: self.name, help: self.help,
+            parse: self.parse, steps: self.steps,
+        }
     }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Protocol — complete, ready to register
+// Protocol — complete
 // ═══════════════════════════════════════════════════════════════
 
-/// A complete protocol definition.
 pub struct Protocol {
     pub name: &'static str,
     pub help: &'static str,
+    parse: Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>,
+    steps: Vec<Box<dyn ErasedStep>>,
+}
+
+impl Protocol {
+    /// CLIENT side: parse args, walk steps, communicate with server.
+    pub fn run_client(
+        &self,
+        args: &str,
+        conn: &mut dyn RawConnection,
+        out: &mut dyn Console,
+        input: &mut dyn InputSource,
+    ) -> Result<(), String> {
+        // 1. Parse → initial data bytes
+        let mut data = (self.parse)(args)?;
+
+        // 2. Walk steps
+        for step in &self.steps {
+            match step.kind() {
+                StepKind::Client => {
+                    // Process data in-process, send result to server
+                    let output = step.client_exec(&data, out, input)?;
+                    conn.send_bytes(&output)?;
+                    data = output; // keep for potential next client step
+                }
+                StepKind::Server => {
+                    // Wait for server's response
+                    data = conn.recv_bytes()?;
+                }
+                StepKind::Finalize => {
+                    // Run finalize closure
+                    let _action = step.client_exec(&data, out, input)?;
+                    // Send sentinel
+                    conn.send_typed(&())?;
+                    return Ok(());
+                }
+            }
+        }
+        // If no finalize step, send sentinel anyway
+        conn.send_typed(&())?;
+        Ok(())
+    }
+
+    /// SERVER side: walk steps, communicate with client.
+    pub fn run_server(&self, conn: &mut dyn RawConnection) -> Result<(), String> {
+        let mut data = Vec::new();
+
+        for step in &self.steps {
+            match step.kind() {
+                StepKind::Client => {
+                    // Receive client's output from wire
+                    data = conn.recv_bytes()?;
+                }
+                StepKind::Server => {
+                    // Process data, send result to client
+                    let output = step.server_exec(&data)?;
+                    conn.send_bytes(&output)?;
+                    data = output;
+                }
+                StepKind::Finalize => {
+                    // Receive sentinel from client
+                    let _sentinel: () = conn.recv_typed()?;
+                    return Ok(());
+                }
+            }
+        }
+        let _sentinel: () = conn.recv_typed()?;
+        Ok(())
+    }
 }
