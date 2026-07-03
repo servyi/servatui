@@ -12,11 +12,15 @@ pub mod console;
 pub mod protocol;
 pub mod server;
 pub mod step;
+#[cfg(feature = "tui")]
+pub mod tui;
 
 pub use connection::{RawConnection, TypedConnection, SocketConnection};
 pub use console::{Console, InputSource, StdoutConsole, StdinInput, BufferConsole, NoInput};
 pub use protocol::{Plugin, Protocol, ShellAction, Client, Server, ClientHead, ClientBuilder, ServerBuilder};
 pub use server::{App, AppBuilder, ServerHandle};
+#[cfg(feature = "tui")]
+pub use tui::{run_tui, TuiState};
 
 /// Marker trait for message types.
 pub trait Message: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static {

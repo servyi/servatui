@@ -1,16 +1,26 @@
 [package]
 name = "servyi-servatui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "Generic server-client framework with TUI/CLI frontends. Define protocols with type-safe builder chains."
 
+[features]
+default = ["tui"]
+tui = ["dep:crossterm", "dep:ratatui", "dep:tui-input"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+crossterm = { version = "0.28", optional = true }
+ratatui = { version = "0.28", optional = true }
+tui-input = { version = "0.10", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
 servyi-ioprovider = { git = "https://github.com/servyi/ioprovider.git" }
 tokio = { version = "1", features = ["macros", "rt"] }
 tokio-test = "0.4"
+
+[[example]]
+name = "echo"

@@ -112,6 +112,12 @@ impl App {
         Ok(console.lines)
     }
 
+    /// Run the TUI client. Blocks until user exits.
+    #[cfg(feature = "tui")]
+    pub fn run_tui(&self) -> Result<(), String> {
+        crate::tui::run_tui(&self.socket, &self.protocols)
+    }
+
     /// Check if server is running.
     pub fn server_running(&self) -> bool {
         SocketConnection::server_exists(&self.socket)
