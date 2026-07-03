@@ -244,8 +244,14 @@ impl Protocol {
                     data = output; // keep for potential next client step
                 }
                 StepKind::Server => {
-                    // Wait for server's response
+                    // Wait for server's response — may be data or an error
                     data = conn.recv_bytes()?;
+                    // Check if server sent an error
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&data) {
+                        if let Some(err) = val.get("__error__").and_then(|v| v.as_str()) {
+                            return Err(err.to_string());
+                        }
+                    }
                 }
                 StepKind::Finalize => {
                     // Run finalize closure
@@ -262,23 +268,29 @@ impl Protocol {
     }
 
     /// SERVER side: walk steps, communicate with client.
+    /// On error: sends the error message back to client before closing.
     pub fn run_server(&self, conn: &mut dyn RawConnection) -> Result<(), String> {
         let mut data = Vec::new();
 
         for step in &self.steps {
             match step.kind() {
                 StepKind::Client => {
-                    // Receive client's output from wire
                     data = conn.recv_bytes()?;
                 }
                 StepKind::Server => {
-                    // Process data, send result to client
-                    let output = step.server_exec(&data)?;
-                    conn.send_bytes(&output)?;
-                    data = output;
+                    match step.server_exec(&data) {
+                        Ok(output) => {
+                            conn.send_bytes(&output)?;
+                            data = output;
+                        }
+                        Err(e) => {
+                            // Send error back to client
+                            let _ = conn.send_typed(&serde_json::json!({"__error__": e}));
+                            return Err(e);
+                        }
+                    }
                 }
                 StepKind::Finalize => {
-                    // Receive sentinel from client
                     let _sentinel: () = conn.recv_typed()?;
                     return Ok(());
                 }

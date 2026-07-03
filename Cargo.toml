@@ -11,3 +11,6 @@ serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
+servyi-ioprovider = { git = "https://github.com/servyi/ioprovider.git" }
+tokio = { version = "1", features = ["macros", "rt"] }
+tokio-test = "0.4"
