@@ -280,6 +280,7 @@ impl Protocol {
         input: &mut dyn InputSource,
     ) -> Result<Vec<u8>, String> {
         let mut data = (self.parse)(args)?;
+        let mut last_server_response = Vec::new();
 
         for step in &self.steps {
             match step.kind() {
@@ -290,6 +291,7 @@ impl Protocol {
                 }
                 StepKind::Server | StepKind::ServerCtx => {
                     data = conn.recv_bytes()?;
+                    last_server_response = data.clone();
                     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&data) {
                         if let Some(err) = val.get("__error__").and_then(|v| v.as_str()) {
                             return Err(err.to_string());
@@ -299,12 +301,12 @@ impl Protocol {
                 StepKind::Finalize => {
                     let _action = step.client_exec(&data, out, input)?;
                     conn.send_typed(&())?;
-                    return Ok(data);
+                    return Ok(last_server_response);
                 }
             }
         }
         conn.send_typed(&())?;
-        Ok(data)
+        Ok(last_server_response)
     }
 
     /// SERVER side: walk steps, communicate with client.
