@@ -66,7 +66,7 @@ fn test_query_end_to_end() {
         socket: socket.clone(),
         protocols,
     };
-    let _server = std::thread::spawn(move || { server_handle.run() });
+    let _server = std::thread::spawn(move || { server_handle.run(&()) });
 
     let app = App::builder(&socket)
         .protocol(make_query_protocol())
@@ -121,7 +121,7 @@ fn test_multiple_commands_one_server() {
         socket: socket.clone(),
         protocols,
     };
-    let _server = std::thread::spawn(move || { server_handle.run() });
+    let _server = std::thread::spawn(move || { server_handle.run(&()) });
 
     let app = App::builder(&socket)
         .protocol(make_query_protocol())
@@ -166,7 +166,7 @@ fn test_server_error_propagates_to_client() {
         socket: socket.clone(),
         protocols,
     };
-    let _server = std::thread::spawn(move || { server_handle.run() });
+    let _server = std::thread::spawn(move || { server_handle.run(&()) });
 
     let app = App::builder(&socket)
         .protocol(Plugin::new("fail", "Always fails")
@@ -201,7 +201,7 @@ fn test_parse_error_on_client() {
         socket: socket.clone(),
         protocols,
     };
-    let _server = std::thread::spawn(move || { server_handle.run() });
+    let _server = std::thread::spawn(move || { server_handle.run(&()) });
 
     let app = App::builder(&socket)
         .protocol(make_add_protocol())
@@ -309,7 +309,7 @@ fn test_sat_protocol_end_to_end() {
         socket: socket.clone(),
         protocols,
     };
-    let _server = std::thread::spawn(move || { server_handle.run() });
+    let _server = std::thread::spawn(move || { server_handle.run(&()) });
 
     let app = App::builder(&socket)
         .protocol(make_sat_protocol(mock))
@@ -325,4 +325,136 @@ fn test_sat_protocol_end_to_end() {
 
     let lines = app.run_cli_command("sat", "x OR NOT x").unwrap();
     assert_eq!(lines, vec!["SAT"]);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Test: server_ctx — shared context passed to server steps
+// ═══════════════════════════════════════════════════════════════
+
+#[derive(Default)]
+struct TestCtx {
+    counter: std::sync::atomic::AtomicU32,
+    greeting: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CountResult { count: u32 }
+
+#[derive(Serialize, Deserialize)]
+struct GreetResult { message: String }
+
+fn make_count_protocol() -> Protocol {
+    Plugin::new("count", "Increment and return counter")
+        .parse(|_: &str| Ok(()))
+        .client(|_: (), _out, _input| Ok(()))
+        .server_ctx(|_: (), ctx: &TestCtx| {
+            let prev = ctx.counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(CountResult { count: prev + 1 })
+        })
+        .client(|r: CountResult, out, _input| {
+            out.print_line(&format!("count={}", r.count));
+            Ok(())
+        })
+        .finalize(|| Ok(ShellAction::Continue))
+}
+
+fn make_greet_protocol() -> Protocol {
+    Plugin::new("greet", "Get greeting from context")
+        .parse(|_: &str| Ok(()))
+        .client(|_: (), _out, _input| Ok(()))
+        .server_ctx(|_: (), ctx: &TestCtx| {
+            Ok(GreetResult { message: ctx.greeting.clone() })
+        })
+        .client(|r: GreetResult, out, _input| {
+            out.print_line(&r.message);
+            Ok(())
+        })
+        .finalize(|| Ok(ShellAction::Continue))
+}
+
+#[test]
+fn test_server_ctx_shared_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("ctx.sock");
+
+    let ctx = TestCtx {
+        counter: std::sync::atomic::AtomicU32::new(0),
+        greeting: "Hello from context!".into(),
+    };
+
+    let protocols = vec![make_count_protocol(), make_greet_protocol()];
+    let server_handle = ServerHandle {
+        socket: socket.clone(),
+        protocols,
+    };
+
+    let ctx_ref = std::sync::Arc::new(ctx);
+    let ctx_clone = ctx_ref.clone();
+    let _server = std::thread::spawn(move || { server_handle.run(&*ctx_clone) });
+
+    let app = App::builder(&socket)
+        .protocol(make_count_protocol())
+        .protocol(make_greet_protocol())
+        .build();
+
+    for _ in 0..100 {
+        if app.server_running() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // First count → 1
+    let lines = app.run_cli_command("count", "").unwrap();
+    assert_eq!(lines, vec!["count=1"]);
+
+    // Second count → 2 (same context, counter persists)
+    let lines = app.run_cli_command("count", "").unwrap();
+    assert_eq!(lines, vec!["count=2"]);
+
+    // Greet from context
+    let lines = app.run_cli_command("greet", "").unwrap();
+    assert_eq!(lines, vec!["Hello from context!"]);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Test: stateless .server() and stateful .server_ctx() coexist
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_mixed_stateless_and_ctx_protocols() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("mixed.sock");
+
+    let ctx = TestCtx {
+        counter: std::sync::atomic::AtomicU32::new(100),
+        greeting: "mixed test".into(),
+    };
+
+    // Stateless add protocol (no ctx) + stateful count protocol (with ctx)
+    let protocols = vec![make_add_protocol(), make_count_protocol()];
+    let server_handle = ServerHandle {
+        socket: socket.clone(),
+        protocols,
+    };
+
+    let ctx_ref = std::sync::Arc::new(ctx);
+    let ctx_clone = ctx_ref.clone();
+    let _server = std::thread::spawn(move || { server_handle.run(&*ctx_clone) });
+
+    let app = App::builder(&socket)
+        .protocol(make_add_protocol())
+        .protocol(make_count_protocol())
+        .build();
+
+    for _ in 0..100 {
+        if app.server_running() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // Stateless add works fine even though server has a context
+    let lines = app.run_cli_command("add", "5 10").unwrap();
+    assert_eq!(lines, vec!["15"]);
+
+    // Stateful count accesses context
+    let lines = app.run_cli_command("count", "").unwrap();
+    assert_eq!(lines, vec!["count=101"]);
 }

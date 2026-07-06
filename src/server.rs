@@ -1,5 +1,6 @@
 //! Server and client runtime.
 
+use std::any::Any;
 use std::path::{Path, PathBuf};
 
 use crate::connection::{SocketConnection, TypedConnection};
@@ -14,7 +15,9 @@ pub struct ServerHandle {
 
 impl ServerHandle {
     /// Run the server loop. Blocks.
-    pub fn run(self) -> Result<(), String> {
+    /// `ctx` is shared state passed to all `.server_ctx()` steps.
+    pub fn run<Ctx: 'static>(self, ctx: &Ctx) -> Result<(), String> {
+        let ctx_any: &dyn Any = ctx;
         let _ = std::fs::remove_file(&self.socket);
         let listener = std::os::unix::net::UnixListener::bind(&self.socket)
             .map_err(|e| e.to_string())?;
@@ -32,7 +35,7 @@ impl ServerHandle {
                         stream,
                         reader: std::io::BufReader::new(reader),
                     };
-                    if let Err(e) = self.handle_connection(&mut conn) {
+                    if let Err(e) = self.handle_connection(&mut conn, ctx_any) {
                         eprintln!("Connection error: {e}");
                     }
                 }
@@ -42,12 +45,12 @@ impl ServerHandle {
         Ok(())
     }
 
-    fn handle_connection(&self, conn: &mut SocketConnection) -> Result<(), String> {
+    fn handle_connection(&self, conn: &mut SocketConnection, ctx: &dyn Any) -> Result<(), String> {
         let cmd_name: String = conn.recv_typed()?;
         let proto = self.protocols.iter()
             .find(|p| p.name == cmd_name)
             .ok_or_else(|| format!("Unknown command: {cmd_name}"))?;
-        proto.run_server(conn)
+        proto.run_server(conn, ctx)
     }
 }
 
@@ -95,8 +98,9 @@ impl App {
     pub fn builder(socket: impl AsRef<Path>) -> AppBuilder { AppBuilder::new(socket) }
 
     /// Run as a server. Blocks.
-    pub fn run_server(self) -> Result<(), String> {
-        ServerHandle { socket: self.socket, protocols: self.protocols }.run()
+    /// `ctx` is shared state passed to all `.server_ctx()` steps.
+    pub fn run_server<Ctx: 'static>(self, ctx: &Ctx) -> Result<(), String> {
+        ServerHandle { socket: self.socket, protocols: self.protocols }.run(ctx)
     }
 
     /// Run a single command as a CLI client.

@@ -11,7 +11,6 @@ pub mod connection;
 pub mod console;
 pub mod protocol;
 pub mod server;
-pub mod step;
 #[cfg(feature = "tui")]
 pub mod tui;
 
@@ -21,17 +20,3 @@ pub use protocol::{Plugin, Protocol, ShellAction, Client, Server, ClientHead, Cl
 pub use server::{App, AppBuilder, ServerHandle};
 #[cfg(feature = "tui")]
 pub use tui::{run_tui, TuiState};
-
-/// Marker trait for message types.
-pub trait Message: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static {
-    const NAME: &'static str;
-    const HELP: &'static str;
-}
-
-/// Marker trait for response types.
-pub trait Response: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static {}
-
-/// Prelude — import this for the most common types.
-pub mod prelude {
-    pub use crate::*;
-}

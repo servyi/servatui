@@ -60,32 +60,7 @@ impl RawConnection for SocketConnection {
     }
 }
 
-/// In-memory connection pair for tests.
-#[cfg(test)]
-pub struct TestConnection {
-    #[allow(dead_code)]
-    incoming: std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>,
-    #[allow(dead_code)]
-    outgoing: std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>,
-}
-
-#[cfg(test)]
-impl TestConnection {
-    /// Create a connected pair for testing.
-    pub fn pair() -> (TestEndpoint, TestEndpoint) {
-        let (a_tx, a_rx) = (std::sync::Mutex::new(std::collections::VecDeque::new()),
-                            std::sync::Mutex::new(std::collections::VecDeque::new()));
-        let a = TestEndpoint { incoming: a_rx, outgoing: a_tx };
-        // For the pair, B receives what A sends and vice versa.
-        // We need to swap: B's incoming = A's outgoing, B's outgoing = A's incoming
-        let b_incoming = std::sync::Mutex::new(std::collections::VecDeque::new());
-        let b_outgoing = std::sync::Mutex::new(std::collections::VecDeque::new());
-        // This is a simplified approach - for real tests we'll use the full server+client
-        let b = TestEndpoint { incoming: b_outgoing, outgoing: b_incoming };
-        (a, b)
-    }
-}
-
+/// In-memory endpoint for unit tests.
 pub struct TestEndpoint {
     pub incoming: std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>,
     pub outgoing: std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>,
