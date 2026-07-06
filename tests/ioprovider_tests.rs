@@ -458,3 +458,76 @@ fn test_mixed_stateless_and_ctx_protocols() {
     let lines = app.run_cli_command("count", "").unwrap();
     assert_eq!(lines, vec!["count=101"]);
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Test: increment protocol — two connections, verify state persists
+// Server starts with initial value 42.
+// Each "increment" returns the OLD value and increments.
+// Connection 1 → returns 42, Connection 2 → returns 43.
+// ═══════════════════════════════════════════════════════════════
+
+#[derive(Serialize, Deserialize)]
+struct IncResult { old_value: u32 }
+
+fn make_increment_protocol() -> Protocol {
+    Plugin::new("increment", "Increment counter, return old value")
+        .parse(|_: &str| Ok(()))
+        .client(|_: (), _out, _input| Ok(()))
+        .server_ctx(|_: (), ctx: &TestCtx| {
+            let old = ctx.counter.swap(
+                ctx.counter.load(std::sync::atomic::Ordering::SeqCst) + 1,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            Ok(IncResult { old_value: old })
+        })
+        .client(|r: IncResult, out, _input| {
+            out.print_line(&format!("old={}", r.old_value));
+            Ok(())
+        })
+        .finalize(|| Ok(ShellAction::Continue))
+}
+
+#[test]
+fn test_increment_state_persists_across_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("inc.sock");
+
+    // Server starts with counter = 42
+    let ctx = TestCtx {
+        counter: std::sync::atomic::AtomicU32::new(42),
+        greeting: String::new(),
+    };
+
+    let protocols = vec![make_increment_protocol()];
+    let server_handle = ServerHandle {
+        socket: socket.clone(),
+        protocols,
+    };
+
+    let ctx_ref = std::sync::Arc::new(ctx);
+    let ctx_clone = ctx_ref.clone();
+    let _server = std::thread::spawn(move || { server_handle.run(&*ctx_clone) });
+
+    let app = App::builder(&socket)
+        .protocol(make_increment_protocol())
+        .build();
+
+    for _ in 0..100 {
+        if app.server_running() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.server_running(), "Server did not start");
+
+    // Connection 1: returns old value 42, counter becomes 43
+    let lines = app.run_cli_command("increment", "").unwrap();
+    assert_eq!(lines, vec!["old=42"]);
+
+    // Connection 2: returns old value 43, counter becomes 44
+    // This proves the server-side context persists between connections
+    let lines = app.run_cli_command("increment", "").unwrap();
+    assert_eq!(lines, vec!["old=43"]);
+
+    // Connection 3: returns old value 44
+    let lines = app.run_cli_command("increment", "").unwrap();
+    assert_eq!(lines, vec!["old=44"]);
+}
