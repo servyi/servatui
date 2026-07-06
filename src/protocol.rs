@@ -271,13 +271,14 @@ pub struct Protocol {
 
 impl Protocol {
     /// CLIENT side: parse args, walk steps, communicate with server.
+    /// Returns the raw bytes of the last server response.
     pub fn run_client(
         &self,
         args: &str,
         conn: &mut dyn RawConnection,
         out: &mut dyn Console,
         input: &mut dyn InputSource,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<u8>, String> {
         let mut data = (self.parse)(args)?;
 
         for step in &self.steps {
@@ -298,12 +299,12 @@ impl Protocol {
                 StepKind::Finalize => {
                     let _action = step.client_exec(&data, out, input)?;
                     conn.send_typed(&())?;
-                    return Ok(());
+                    return Ok(data);
                 }
             }
         }
         conn.send_typed(&())?;
-        Ok(())
+        Ok(data)
     }
 
     /// SERVER side: walk steps, communicate with client.

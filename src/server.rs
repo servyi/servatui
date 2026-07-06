@@ -81,6 +81,10 @@ impl AppBuilder {
     pub fn version(mut self, v: impl Into<String>) -> Self { self.version = v.into(); self }
     pub fn log_path(mut self, p: impl Into<String>) -> Self { self.log_path = p.into(); self }
     pub fn protocol(mut self, p: Protocol) -> Self { self.protocols.push(p); self }
+    pub fn protocol_all(mut self, protocols: impl IntoIterator<Item = Protocol>) -> Self {
+        self.protocols.extend(protocols);
+        self
+    }
 
     pub fn build(self) -> App {
         App {
@@ -110,7 +114,14 @@ impl App {
     }
 
     /// Run a single command as a CLI client.
+    /// Returns rendered output lines.
     pub fn run_cli_command(&self, command: &str, args: &str) -> Result<Vec<String>, String> {
+        Ok(self.run_cli_command_raw(command, args)?.0)
+    }
+
+    /// Run a single command as a CLI client.
+    /// Returns (rendered lines, raw server response bytes).
+    pub fn run_cli_command_raw(&self, command: &str, args: &str) -> Result<(Vec<String>, Vec<u8>), String> {
         let mut conn = SocketConnection::connect(&self.socket)?;
         conn.send_typed(&command.to_string())?;
         let proto = self.protocols.iter()
@@ -118,8 +129,8 @@ impl App {
             .ok_or_else(|| format!("Unknown command: {command}"))?;
         let mut console = BufferConsole::new();
         let mut input = NoInput;
-        proto.run_client(args, &mut conn, &mut console, &mut input)?;
-        Ok(console.lines)
+        let raw = proto.run_client(args, &mut conn, &mut console, &mut input)?;
+        Ok((console.lines, raw))
     }
 
     /// Run the TUI client. Blocks until user exits.
