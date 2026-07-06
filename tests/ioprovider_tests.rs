@@ -460,10 +460,16 @@ fn test_mixed_stateless_and_ctx_protocols() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Test: increment protocol — two connections, verify state persists
-// Server starts with initial value 42.
-// Each "increment" returns the OLD value and increments.
-// Connection 1 → returns 42, Connection 2 → returns 43.
+// Test: increment protocol — verify ctx state persists across connections
+//
+// Server starts with counter = 42.
+// "increment" returns the OLD value and atomically increments.
+// "read" returns the CURRENT value without modifying it.
+//
+// We verify:
+// 1. Three increments return 42, 43, 44 (all distinct — proves mutation)
+// 2. A read after all increments returns 45 (independent confirmation)
+// 3. Each result is non-empty (proves the protocol actually ran)
 // ═══════════════════════════════════════════════════════════════
 
 #[derive(Serialize, Deserialize)]
@@ -487,18 +493,34 @@ fn make_increment_protocol() -> Protocol {
         .finalize(|| Ok(ShellAction::Continue))
 }
 
+#[derive(Serialize, Deserialize)]
+struct ReadResult { value: u32 }
+
+fn make_read_protocol() -> Protocol {
+    Plugin::new("read", "Read current counter value")
+        .parse(|_: &str| Ok(()))
+        .client(|_: (), _out, _input| Ok(()))
+        .server_ctx(|_: (), ctx: &TestCtx| {
+            Ok(ReadResult { value: ctx.counter.load(std::sync::atomic::Ordering::SeqCst) })
+        })
+        .client(|r: ReadResult, out, _input| {
+            out.print_line(&format!("value={}", r.value));
+            Ok(())
+        })
+        .finalize(|| Ok(ShellAction::Continue))
+}
+
 #[test]
 fn test_increment_state_persists_across_connections() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("inc.sock");
 
-    // Server starts with counter = 42
     let ctx = TestCtx {
         counter: std::sync::atomic::AtomicU32::new(42),
         greeting: String::new(),
     };
 
-    let protocols = vec![make_increment_protocol()];
+    let protocols = vec![make_increment_protocol(), make_read_protocol()];
     let server_handle = ServerHandle {
         socket: socket.clone(),
         protocols,
@@ -510,6 +532,7 @@ fn test_increment_state_persists_across_connections() {
 
     let app = App::builder(&socket)
         .protocol(make_increment_protocol())
+        .protocol(make_read_protocol())
         .build();
 
     for _ in 0..100 {
@@ -518,16 +541,44 @@ fn test_increment_state_persists_across_connections() {
     }
     assert!(app.server_running(), "Server did not start");
 
-    // Connection 1: returns old value 42, counter becomes 43
-    let lines = app.run_cli_command("increment", "").unwrap();
-    assert_eq!(lines, vec!["old=42"]);
+    // ── Increment 1: should return old=42, counter becomes 43 ──
+    let lines1 = app.run_cli_command("increment", "")
+        .expect("increment #1 should succeed");
+    assert!(!lines1.is_empty(), "increment #1 returned no output");
+    let v1: u32 = lines1[0].strip_prefix("old=")
+        .and_then(|s| s.parse().ok())
+        .expect("increment #1 output should be 'old=N'");
+    assert_eq!(v1, 42, "increment #1: expected old=42, got old={v1}");
 
-    // Connection 2: returns old value 43, counter becomes 44
-    // This proves the server-side context persists between connections
-    let lines = app.run_cli_command("increment", "").unwrap();
-    assert_eq!(lines, vec!["old=43"]);
+    // ── Increment 2: should return old=43, counter becomes 44 ──
+    let lines2 = app.run_cli_command("increment", "")
+        .expect("increment #2 should succeed");
+    assert!(!lines2.is_empty(), "increment #2 returned no output");
+    let v2: u32 = lines2[0].strip_prefix("old=")
+        .and_then(|s| s.parse().ok())
+        .expect("increment #2 output should be 'old=N'");
+    assert_eq!(v2, 43, "increment #2: expected old=43, got old={v2} — state did NOT persist from connection 1");
 
-    // Connection 3: returns old value 44
-    let lines = app.run_cli_command("increment", "").unwrap();
-    assert_eq!(lines, vec!["old=44"]);
+    // ── Increment 3: should return old=44, counter becomes 45 ──
+    let lines3 = app.run_cli_command("increment", "")
+        .expect("increment #3 should succeed");
+    assert!(!lines3.is_empty(), "increment #3 returned no output");
+    let v3: u32 = lines3[0].strip_prefix("old=")
+        .and_then(|s| s.parse().ok())
+        .expect("increment #3 output should be 'old=N'");
+    assert_eq!(v3, 44, "increment #3: expected old=44, got old={v3} — state did NOT persist from connection 2");
+
+    // ── All three values must be distinct (proves mutation happened) ──
+    assert_ne!(v1, v2, "values must differ — counter is not mutating");
+    assert_ne!(v2, v3, "values must differ — counter is not mutating");
+
+    // ── Independent read: counter should now be 45 ──
+    // Uses a DIFFERENT protocol ("read") to verify — not relying on increment's own output.
+    let lines_r = app.run_cli_command("read", "")
+        .expect("read should succeed");
+    assert!(!lines_r.is_empty(), "read returned no output");
+    let vr: u32 = lines_r[0].strip_prefix("value=")
+        .and_then(|s| s.parse().ok())
+        .expect("read output should be 'value=N'");
+    assert_eq!(vr, 45, "read after 3 increments from 42: expected value=45, got value={vr}");
 }

@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::path::{Path, PathBuf};
 
-use crate::connection::{SocketConnection, TypedConnection};
+use crate::connection::{SocketConnection, TypedConnection, RawConnection};
 use crate::console::{BufferConsole, NoInput};
 use crate::protocol::Protocol;
 
@@ -46,7 +46,13 @@ impl ServerHandle {
     }
 
     fn handle_connection(&self, conn: &mut SocketConnection, ctx: &dyn Any) -> Result<(), String> {
-        let cmd_name: String = conn.recv_typed()?;
+        let raw = conn.recv_bytes()?;
+        let trimmed = std::str::from_utf8(&raw).unwrap_or("").trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let cmd_name: String = serde_json::from_str(trimmed)
+            .map_err(|e| e.to_string())?;
         let proto = self.protocols.iter()
             .find(|p| p.name == cmd_name)
             .ok_or_else(|| format!("Unknown command: {cmd_name}"))?;
