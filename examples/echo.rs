@@ -58,7 +58,7 @@ fn main() {
 
     if args.len() >= 2 && args[1] == "serve" {
         println!("Starting echo server on {socket}");
-        if let Err(e) = app.run_server(&()) {
+        if let Err(e) = app.run_server(std::sync::Arc::new(())) {
             eprintln!("Server error: {e}");
             std::process::exit(1);
         }

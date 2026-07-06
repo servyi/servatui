@@ -66,7 +66,7 @@ fn test_query_end_to_end() {
         socket: socket.clone(),
         protocols,
     };
-    let _server = std::thread::spawn(move || { server_handle.run(&()) });
+    let _server = std::thread::spawn(move || { server_handle.run(std::sync::Arc::new(())) });
 
     let app = App::builder(&socket)
         .protocol(make_query_protocol())
@@ -121,7 +121,7 @@ fn test_multiple_commands_one_server() {
         socket: socket.clone(),
         protocols,
     };
-    let _server = std::thread::spawn(move || { server_handle.run(&()) });
+    let _server = std::thread::spawn(move || { server_handle.run(std::sync::Arc::new(())) });
 
     let app = App::builder(&socket)
         .protocol(make_query_protocol())
@@ -166,7 +166,7 @@ fn test_server_error_propagates_to_client() {
         socket: socket.clone(),
         protocols,
     };
-    let _server = std::thread::spawn(move || { server_handle.run(&()) });
+    let _server = std::thread::spawn(move || { server_handle.run(std::sync::Arc::new(())) });
 
     let app = App::builder(&socket)
         .protocol(Plugin::new("fail", "Always fails")
@@ -201,7 +201,7 @@ fn test_parse_error_on_client() {
         socket: socket.clone(),
         protocols,
     };
-    let _server = std::thread::spawn(move || { server_handle.run(&()) });
+    let _server = std::thread::spawn(move || { server_handle.run(std::sync::Arc::new(())) });
 
     let app = App::builder(&socket)
         .protocol(make_add_protocol())
@@ -309,7 +309,7 @@ fn test_sat_protocol_end_to_end() {
         socket: socket.clone(),
         protocols,
     };
-    let _server = std::thread::spawn(move || { server_handle.run(&()) });
+    let _server = std::thread::spawn(move || { server_handle.run(std::sync::Arc::new(())) });
 
     let app = App::builder(&socket)
         .protocol(make_sat_protocol(mock))
@@ -390,7 +390,7 @@ fn test_server_ctx_shared_state() {
 
     let ctx_ref = std::sync::Arc::new(ctx);
     let ctx_clone = ctx_ref.clone();
-    let _server = std::thread::spawn(move || { server_handle.run(&*ctx_clone) });
+    let _server = std::thread::spawn(move || { server_handle.run(ctx_clone) });
 
     let app = App::builder(&socket)
         .protocol(make_count_protocol())
@@ -438,7 +438,7 @@ fn test_mixed_stateless_and_ctx_protocols() {
 
     let ctx_ref = std::sync::Arc::new(ctx);
     let ctx_clone = ctx_ref.clone();
-    let _server = std::thread::spawn(move || { server_handle.run(&*ctx_clone) });
+    let _server = std::thread::spawn(move || { server_handle.run(ctx_clone) });
 
     let app = App::builder(&socket)
         .protocol(make_add_protocol())
@@ -528,7 +528,7 @@ fn test_increment_state_persists_across_connections() {
 
     let ctx_ref = std::sync::Arc::new(ctx);
     let ctx_clone = ctx_ref.clone();
-    let _server = std::thread::spawn(move || { server_handle.run(&*ctx_clone) });
+    let _server = std::thread::spawn(move || { server_handle.run(ctx_clone) });
 
     let app = App::builder(&socket)
         .protocol(make_increment_protocol())

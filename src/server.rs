@@ -16,8 +16,12 @@ pub struct ServerHandle {
 impl ServerHandle {
     /// Run the server loop. Blocks.
     /// `ctx` is shared state passed to all `.server_ctx()` steps.
-    pub fn run<Ctx: 'static>(self, ctx: &Ctx) -> Result<(), String> {
-        let ctx_any: &dyn Any = ctx;
+    /// Each connection is handled in its own thread (concurrent).
+    pub fn run<Ctx>(self, ctx: std::sync::Arc<Ctx>) -> Result<(), String>
+    where
+        Ctx: 'static + Send + Sync,
+    {
+        use std::sync::Arc;
         let _ = std::fs::remove_file(&self.socket);
         let listener = std::os::unix::net::UnixListener::bind(&self.socket)
             .map_err(|e| e.to_string())?;
@@ -27,17 +31,26 @@ impl ServerHandle {
             std::fs::set_permissions(&self.socket, std::fs::Permissions::from_mode(0o666)).ok();
         }
 
+        let protocols = Arc::new(self.protocols);
+
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
-                    let reader = stream.try_clone().map_err(|e| e.to_string())?;
-                    let mut conn = SocketConnection {
-                        stream,
-                        reader: std::io::BufReader::new(reader),
-                    };
-                    if let Err(e) = self.handle_connection(&mut conn, ctx_any) {
-                        eprintln!("Connection error: {e}");
-                    }
+                    let protocols = Arc::clone(&protocols);
+                    let ctx = Arc::clone(&ctx);
+                    std::thread::spawn(move || {
+                        let reader = match stream.try_clone() {
+                            Ok(r) => r,
+                            Err(e) => { eprintln!("Clone error: {e}"); return; }
+                        };
+                        let mut conn = SocketConnection {
+                            stream,
+                            reader: std::io::BufReader::new(reader),
+                        };
+                        let ctx_any: &dyn Any = &*ctx;                        if let Err(e) = Self::handle_connection(&protocols, &mut conn, ctx_any) {
+                            eprintln!("Connection error: {e}");
+                        }
+                    });
                 }
                 Err(e) => eprintln!("Accept error: {e}"),
             }
@@ -45,7 +58,11 @@ impl ServerHandle {
         Ok(())
     }
 
-    fn handle_connection(&self, conn: &mut SocketConnection, ctx: &dyn Any) -> Result<(), String> {
+    fn handle_connection(
+        protocols: &[Protocol],
+        conn: &mut SocketConnection,
+        ctx: &dyn Any,
+    ) -> Result<(), String> {
         let raw = conn.recv_bytes()?;
         let trimmed = std::str::from_utf8(&raw).unwrap_or("").trim();
         if trimmed.is_empty() {
@@ -53,7 +70,7 @@ impl ServerHandle {
         }
         let cmd_name: String = serde_json::from_str(trimmed)
             .map_err(|e| e.to_string())?;
-        let proto = self.protocols.iter()
+        let proto = protocols.iter()
             .find(|p| p.name == cmd_name)
             .ok_or_else(|| format!("Unknown command: {cmd_name}"))?;
         proto.run_server(conn, ctx)
@@ -109,7 +126,7 @@ impl App {
 
     /// Run as a server. Blocks.
     /// `ctx` is shared state passed to all `.server_ctx()` steps.
-    pub fn run_server<Ctx: 'static>(self, ctx: &Ctx) -> Result<(), String> {
+    pub fn run_server<Ctx: 'static + Send + Sync>(self, ctx: std::sync::Arc<Ctx>) -> Result<(), String> {
         ServerHandle { socket: self.socket, protocols: self.protocols }.run(ctx)
     }
 

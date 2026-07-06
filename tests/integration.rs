@@ -60,7 +60,7 @@ fn test_echo_end_to_end() {
         protocols: server_protocols,
     };
     let _server_thread = std::thread::spawn(move || {
-        server_handle.run(&())
+        server_handle.run(std::sync::Arc::new(()))
     });
 
     // Wait for server to start
@@ -98,7 +98,7 @@ fn test_unknown_command() {
         protocols: server_protocols,
     };
     let _server_thread = std::thread::spawn(move || {
-        server_handle.run(&())
+        server_handle.run(std::sync::Arc::new(()))
     });
 
     for _ in 0..100 {
