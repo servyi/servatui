@@ -582,3 +582,87 @@ fn test_increment_state_persists_across_connections() {
         .expect("read output should be 'value=N'");
     assert_eq!(vr, 45, "read after 3 increments from 42: expected value=45, got value={vr}");
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Test: concurrent request handling
+//
+// Two clients connect simultaneously. Each server_ctx step sleeps 300ms.
+// If concurrent: both finish in ~300ms.
+// If sequential: they finish in ~600ms.
+// We assert < 500ms to prove parallelism.
+// ═══════════════════════════════════════════════════════════════
+
+#[derive(Serialize, Deserialize)]
+struct SlowResult { ok: bool }
+
+fn make_slow_protocol() -> Protocol {
+    Plugin::new("slow", "Sleeps 300ms then responds")
+        .parse(|_: &str| Ok(()))
+        .client(|_: (), _out, _input| Ok(()))
+        .server_ctx(|_: (), _ctx: &TestCtx| {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            Ok(SlowResult { ok: true })
+        })
+        .client(|r: SlowResult, out, _input| {
+            out.print_line(if r.ok { "done" } else { "fail" });
+            Ok(())
+        })
+        .finalize(|| Ok(ShellAction::Continue))
+}
+
+#[test]
+fn test_concurrent_requests_handled_in_parallel() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("conc.sock");
+
+    let ctx = TestCtx::default();
+
+    let protocols = vec![make_slow_protocol()];
+    let server_handle = ServerHandle {
+        socket: socket.clone(),
+        protocols,
+    };
+
+    let ctx_ref = std::sync::Arc::new(ctx);
+    let ctx_clone = ctx_ref.clone();
+    let _server = std::thread::spawn(move || { server_handle.run(ctx_clone) });
+
+    let app = App::builder(&socket)
+        .protocol(make_slow_protocol())
+        .build();
+
+    for _ in 0..100 {
+        if app.server_running() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.server_running(), "Server did not start");
+
+    // Fire two requests simultaneously from separate threads
+    let mk_app = || App::builder(&socket).protocol(make_slow_protocol()).build();
+    let app1 = mk_app();
+    let app2 = mk_app();
+
+    let start = std::time::Instant::now();
+
+    let t1 = std::thread::spawn(move || {
+        app1.run_cli_command("slow", "").unwrap()
+    });
+    let t2 = std::thread::spawn(move || {
+        app2.run_cli_command("slow", "").unwrap()
+    });
+
+    let r1 = t1.join().unwrap();
+    let r2 = t2.join().unwrap();
+    let elapsed = start.elapsed();
+
+    assert!(r1.contains(&"done".to_string()), "request 1 should succeed");
+    assert!(r2.contains(&"done".to_string()), "request 2 should succeed");
+
+    // If sequential: ~600ms. If concurrent: ~300ms.
+    // Assert < 500ms to prove parallelism (with margin for overhead).
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "Two 300ms requests took {:?} — server appears sequential (expected < 500ms)",
+        elapsed
+    );
+}
