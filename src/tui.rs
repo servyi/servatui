@@ -261,23 +261,30 @@ fn tui_loop(
 }
 
 /// Split a string into lines of at most `width` display columns.
-/// Empty input yields one empty line.
+/// Continuation lines start with "↪ " so wrapped text is visually distinct.
 fn wrap_line(s: &str, width: usize) -> Vec<String> {
-    if width == 0 || s.is_empty() {
+    if width <= 2 || s.is_empty() {
         return vec![s.to_string()];
     }
+    const PREFIX: &str = "↪ ";
+    let cont_width = width - PREFIX.chars().count();
+    let chars: Vec<char> = s.chars().collect();
+    let mut idx = 0;
     let mut result = Vec::new();
-    let mut current = String::new();
-    let mut col = 0usize;
-    for c in s.chars() {
-        if col >= width {
-            result.push(std::mem::take(&mut current));
-            col = 0;
-        }
-        current.push(c);
-        col += 1;
+
+    // First line: up to `width` chars
+    let end = (idx + width).min(chars.len());
+    result.push(chars[idx..end].iter().collect());
+    idx = end;
+
+    // Continuation lines: PREFIX + up to cont_width chars
+    while idx < chars.len() {
+        let end = (idx + cont_width).min(chars.len());
+        let chunk: String = chars[idx..end].iter().collect();
+        result.push(format!("{PREFIX}{chunk}"));
+        idx = end;
     }
-    result.push(current);
+
     result
 }
 
