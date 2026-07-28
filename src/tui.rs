@@ -86,6 +86,7 @@ fn tui_loop(
         text::Line,
         widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     };
+    use textwrap::{Options, wrap};
     use tui_input::backend::crossterm::EventHandler;
 
     loop {
@@ -104,7 +105,10 @@ fn tui_loop(
                 .flat_map(|s| {
                     let clean = s.rsplit_once('\r').map(|(_, last)| last).unwrap_or(s);
                     let clean = clean.replace('\t', "    ");
-                    wrap_line(&clean, inner_width)
+                    let opts = Options::new(inner_width)
+                        .subsequent_indent("↪ ")
+                        .break_words(true);
+                    wrap(&clean, opts).into_iter().map(|cow| cow.into_owned()).collect::<Vec<_>>()
                 })
                 .collect();
 
@@ -258,34 +262,6 @@ fn tui_loop(
             }
         }
     }
-}
-
-/// Split a string into lines of at most `width` display columns.
-/// Continuation lines start with "↪ " so wrapped text is visually distinct.
-fn wrap_line(s: &str, width: usize) -> Vec<String> {
-    if width <= 2 || s.is_empty() {
-        return vec![s.to_string()];
-    }
-    const PREFIX: &str = "↪ ";
-    let cont_width = width - PREFIX.chars().count();
-    let chars: Vec<char> = s.chars().collect();
-    let mut idx = 0;
-    let mut result = Vec::new();
-
-    // First line: up to `width` chars
-    let end = (idx + width).min(chars.len());
-    result.push(chars[idx..end].iter().collect());
-    idx = end;
-
-    // Continuation lines: PREFIX + up to cont_width chars
-    while idx < chars.len() {
-        let end = (idx + cont_width).min(chars.len());
-        let chunk: String = chars[idx..end].iter().collect();
-        result.push(format!("{PREFIX}{chunk}"));
-        idx = end;
-    }
-
-    result
 }
 
 fn execute_command(proto: &Protocol, args: &str, socket: &Path) -> Result<Vec<String>, String> {

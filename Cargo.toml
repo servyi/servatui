@@ -7,7 +7,7 @@ description = "Generic server-client framework with TUI/CLI frontends. Define pr
 
 [features]
 default = ["tui"]
-tui = ["dep:crossterm", "dep:ratatui", "dep:tui-input"]
+tui = ["dep:crossterm", "dep:ratatui", "dep:tui-input", "dep:textwrap"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -15,6 +15,7 @@ serde_json = "1"
 crossterm = { version = "0.28", optional = true }
 ratatui = { version = "0.28", optional = true }
 tui-input = { version = "0.10", optional = true }
+textwrap = { version = "0.16", default-features = false, features = ["unicode-width"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
