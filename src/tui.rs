@@ -84,7 +84,7 @@ fn tui_loop(
     use ratatui::{
         layout::{Constraint, Direction, Layout},
         text::Line,
-        widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
+        widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     };
     use tui_input::backend::crossterm::EventHandler;
 
@@ -112,6 +112,7 @@ fn tui_loop(
             };
 
             let lines: Vec<Line> = state.log_lines.iter().map(|s| Line::from(s.as_str())).collect();
+            f.render_widget(Clear, chunks[0]);
             f.render_widget(
                 Paragraph::new(lines)
                     .scroll((scroll as u16, 0))
