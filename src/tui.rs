@@ -103,7 +103,7 @@ fn tui_loop(
 
             let log_height = chunks[0].height.saturating_sub(2) as usize;
             let total = state.log_lines.len();
-            let scroll = total.saturating_sub(log_height).saturating_sub(state.scroll_up as usize);
+            let start = total.saturating_sub(log_height).saturating_sub(state.scroll_up as usize);
 
             let title = if state.scroll_up > 0 {
                 format!("Log (↑{} lines)", state.scroll_up)
@@ -111,7 +111,8 @@ fn tui_loop(
                 "Log".to_string()
             };
 
-            let lines: Vec<Line> = state.log_lines.iter()
+            let lines: Vec<Line> = state.log_lines[start..]
+                .iter()
                 .map(|s| {
                     let clean = s.rsplit_once('\r').map(|(_, last)| last).unwrap_or(s);
                     Line::from(clean.replace('\t', "    "))
@@ -120,9 +121,7 @@ fn tui_loop(
             f.render_widget(Clear, chunks[0]);
             f.render_widget(
                 Paragraph::new(lines)
-                    .scroll((scroll as u16, 0))
-                    .block(Block::default().borders(Borders::ALL).title(title))
-                    .wrap(Wrap { trim: false }),
+                    .block(Block::default().borders(Borders::ALL).title(title)),
                 chunks[0],
             );
 
