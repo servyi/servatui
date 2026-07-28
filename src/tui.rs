@@ -181,6 +181,8 @@ fn tui_loop(
             match key.code {
                 KeyCode::PageUp => { state.scroll_up = state.scroll_up.saturating_add(5); continue; }
                 KeyCode::PageDown => { state.scroll_up = state.scroll_up.saturating_sub(5); continue; }
+                KeyCode::Home => { state.scroll_up = u16::MAX; continue; }
+                KeyCode::End => { state.scroll_up = 0; continue; }
                 KeyCode::Up if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     state.scroll_up = state.scroll_up.saturating_add(1);
                     continue;
