@@ -55,7 +55,10 @@ impl RawConnection for SocketConnection {
 
     fn recv_bytes(&mut self) -> Result<Vec<u8>, String> {
         let mut line = String::new();
-        self.reader.read_line(&mut line).map_err(|e| e.to_string())?;
+        let n = self.reader.read_line(&mut line).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("connection closed".into());
+        }
         Ok(line.into_bytes())
     }
 }

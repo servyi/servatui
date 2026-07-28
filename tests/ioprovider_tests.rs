@@ -666,3 +666,153 @@ fn test_concurrent_requests_handled_in_parallel() {
         elapsed
     );
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Test: connection drop mid-protocol
+// Client connects, sends partial data, drops. Next client should
+// still be able to connect and get clean responses.
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_connection_drop_mid_protocol() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("drop.sock");
+
+    let ctx = TestCtx::default();
+    let protocols = vec![make_count_protocol()];
+    let server_handle = ServerHandle {
+        socket: socket.clone(),
+        protocols,
+    };
+    let ctx_ref = std::sync::Arc::new(ctx);
+    let ctx_clone = ctx_ref.clone();
+    let _server = std::thread::spawn(move || { server_handle.run(ctx_clone) });
+
+    let app = App::builder(&socket)
+        .protocol(make_count_protocol())
+        .build();
+
+    for _ in 0..100 {
+        if app.server_running() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.server_running());
+
+    // Connect and immediately drop (simulates client crash mid-protocol)
+    {
+        use servyi_servatui::{SocketConnection, TypedConnection};
+        let mut conn = SocketConnection::connect(&socket).unwrap();
+        conn.send_typed(&"count".to_string()).unwrap();
+        // Send partial data then drop — no sentinel
+        conn.send_typed(&"garbage".to_string()).unwrap();
+        drop(conn);
+    }
+
+    // Give server time to process the dropped connection
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Server should still be alive and responsive
+    let lines = app.run_cli_command("count", "").unwrap();
+    assert!(!lines.is_empty(), "server should recover after dropped connection");
+    assert!(lines[0].starts_with("count="));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Test: wrong Ctx type → server_ctx downcast fails cleanly
+// ═══════════════════════════════════════════════════════════════
+
+#[derive(Default)]
+struct WrongCtx;
+
+#[test]
+fn test_server_ctx_wrong_type_downcast() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("wrongctx.sock");
+
+    // Protocol expects &TestCtx, but server runs with &WrongCtx
+    let protocols = vec![make_count_protocol()];
+    let server_handle = ServerHandle {
+        socket: socket.clone(),
+        protocols,
+    };
+
+    let ctx = std::sync::Arc::new(WrongCtx);
+    let _server = std::thread::spawn(move || { server_handle.run(ctx) });
+
+    let app = App::builder(&socket)
+        .protocol(make_count_protocol())
+        .build();
+
+    for _ in 0..100 {
+        if app.server_running() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.server_running());
+
+    // Client should get an error, not a panic or hang
+    let result = app.run_cli_command("count", "");
+    assert!(result.is_err(), "should get error for wrong Ctx type");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("context type mismatch"),
+        "error should mention type mismatch, got: {err}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Test: malformed JSON on the wire
+// Sends invalid data as the protocol name. Server should return
+// a clean error, not crash.
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_malformed_json_on_wire() {
+    use servyi_servatui::{SocketConnection, TypedConnection, RawConnection};
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("badjson.sock");
+
+    let ctx = TestCtx::default();
+    let protocols = vec![make_count_protocol()];
+    let server_handle = ServerHandle {
+        socket: socket.clone(),
+        protocols,
+    };
+    let ctx_ref = std::sync::Arc::new(ctx);
+    let ctx_clone = ctx_ref.clone();
+    let _server = std::thread::spawn(move || { server_handle.run(ctx_clone) });
+
+    let app = App::builder(&socket)
+        .protocol(make_count_protocol())
+        .build();
+
+    for _ in 0..100 {
+        if app.server_running() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.server_running());
+
+    // Send invalid JSON as protocol name
+    {
+        let mut conn = SocketConnection::connect(&socket).unwrap();
+        conn.send_bytes(b"{not valid json").unwrap();
+        // Server tries to parse, gets error, logs it. Connection may drop.
+        let _ = conn.recv_bytes();
+    }
+
+    // Give server time to process
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // Send raw garbage bytes (not even valid UTF-8)
+    {
+        let mut conn = SocketConnection::connect(&socket).unwrap();
+        conn.send_bytes(b"\xff\xfe\x00\x01").unwrap();
+        let _ = conn.recv_bytes();
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // Server should still work normally
+    let lines = app.run_cli_command("count", "").unwrap();
+    assert!(!lines.is_empty(), "server should survive malformed input");
+}
