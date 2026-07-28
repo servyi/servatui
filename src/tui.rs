@@ -111,7 +111,9 @@ fn tui_loop(
                 "Log".to_string()
             };
 
-            let lines: Vec<Line> = state.log_lines.iter().map(|s| Line::from(s.as_str())).collect();
+            let lines: Vec<Line> = state.log_lines.iter()
+                .map(|s| Line::from(s.replace('\r', "").replace('\t', "    ")))
+                .collect();
             f.render_widget(Clear, chunks[0]);
             f.render_widget(
                 Paragraph::new(lines)
