@@ -112,7 +112,10 @@ fn tui_loop(
             };
 
             let lines: Vec<Line> = state.log_lines.iter()
-                .map(|s| Line::from(s.replace('\r', "").replace('\t', "    ")))
+                .map(|s| {
+                    let clean = s.rsplit_once('\r').map(|(_, last)| last).unwrap_or(s);
+                    Line::from(clean.replace('\t', "    "))
+                })
                 .collect();
             f.render_widget(Clear, chunks[0]);
             f.render_widget(
@@ -254,7 +257,6 @@ fn tui_loop(
     }
 }
 
-/// Execute a command: connect to server, run client side, collect output.
 fn execute_command(proto: &Protocol, args: &str, socket: &Path) -> Result<Vec<String>, String> {
     let mut conn = SocketConnection::connect(socket)?;
     conn.send_typed(&proto.name.to_string())?;
