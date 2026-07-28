@@ -89,12 +89,6 @@ fn tui_loop(
     use tui_input::backend::crossterm::EventHandler;
 
     loop {
-        // Clamp scroll
-        let term_h = terminal.size().map(|s| s.height as usize).unwrap_or(24);
-        let log_h = term_h.saturating_sub(3).saturating_sub(2);
-        let max_scroll = state.log_lines.len().saturating_sub(log_h);
-        state.scroll_up = (state.scroll_up as usize).min(max_scroll) as u16;
-
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -102,21 +96,32 @@ fn tui_loop(
                 .split(f.area());
 
             let log_height = chunks[0].height.saturating_sub(2) as usize;
-            let total = state.log_lines.len();
-            let start = total.saturating_sub(log_height).saturating_sub(state.scroll_up as usize);
+            let inner_width = chunks[0].width.saturating_sub(2) as usize;
+
+            // Pre-wrap: each log line becomes 1+ display rows of ≤ inner_width chars.
+            // Recalculated every frame, so terminal resizing works automatically.
+            let wrapped: Vec<String> = state.log_lines.iter()
+                .flat_map(|s| {
+                    let clean = s.rsplit_once('\r').map(|(_, last)| last).unwrap_or(s);
+                    let clean = clean.replace('\t', "    ");
+                    wrap_line(&clean, inner_width)
+                })
+                .collect();
+
+            let total_rows = wrapped.len();
+            let max_scroll = total_rows.saturating_sub(log_height);
+            state.scroll_up = (state.scroll_up as usize).min(max_scroll) as u16;
 
             let title = if state.scroll_up > 0 {
-                format!("Log (↑{} lines)", state.scroll_up)
+                format!("Log (↑{} rows)", state.scroll_up)
             } else {
                 "Log".to_string()
             };
 
-            let lines: Vec<Line> = state.log_lines[start..]
+            let start = total_rows.saturating_sub(log_height).saturating_sub(state.scroll_up as usize);
+            let lines: Vec<Line> = wrapped[start..]
                 .iter()
-                .map(|s| {
-                    let clean = s.rsplit_once('\r').map(|(_, last)| last).unwrap_or(s);
-                    Line::from(clean.replace('\t', "    "))
-                })
+                .map(|s| Line::from(s.as_str()))
                 .collect();
             f.render_widget(Clear, chunks[0]);
             f.render_widget(
@@ -126,9 +131,8 @@ fn tui_loop(
             );
 
             // Scrollbar
-            let ms = total.saturating_sub(log_height);
-            let sb_scroll = ms.saturating_sub(state.scroll_up as usize);
-            let mut sb_state = ScrollbarState::new(ms + 1)
+            let sb_scroll = max_scroll.saturating_sub(state.scroll_up as usize);
+            let mut sb_state = ScrollbarState::new(max_scroll + 1)
                 .position(sb_scroll)
                 .viewport_content_length(log_height);
             f.render_stateful_widget(
@@ -254,6 +258,27 @@ fn tui_loop(
             }
         }
     }
+}
+
+/// Split a string into lines of at most `width` display columns.
+/// Empty input yields one empty line.
+fn wrap_line(s: &str, width: usize) -> Vec<String> {
+    if width == 0 || s.is_empty() {
+        return vec![s.to_string()];
+    }
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut col = 0usize;
+    for c in s.chars() {
+        if col >= width {
+            result.push(std::mem::take(&mut current));
+            col = 0;
+        }
+        current.push(c);
+        col += 1;
+    }
+    result.push(current);
+    result
 }
 
 fn execute_command(proto: &Protocol, args: &str, socket: &Path) -> Result<Vec<String>, String> {
