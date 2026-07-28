@@ -83,8 +83,9 @@ fn tui_loop(
     use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
     use ratatui::{
         layout::{Constraint, Direction, Layout},
-        text::Line,
-        widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     };
     use textwrap::{Options, wrap};
     use tui_input::backend::crossterm::EventHandler;
@@ -123,9 +124,19 @@ fn tui_loop(
             };
 
             let start = total_rows.saturating_sub(log_height).saturating_sub(state.scroll_up as usize);
+            let gray = Style::default().fg(Color::DarkGray);
             let lines: Vec<Line> = wrapped[start..]
                 .iter()
-                .map(|s| Line::from(s.as_str()))
+                .map(|s| {
+                    if let Some(rest) = s.strip_prefix("↪ ") {
+                        Line::from(vec![
+                            Span::styled("↪ ", gray),
+                            Span::raw(rest),
+                        ])
+                    } else {
+                        Line::from(s.as_str())
+                    }
+                })
                 .collect();
             f.render_widget(Clear, chunks[0]);
             f.render_widget(
