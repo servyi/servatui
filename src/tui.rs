@@ -1,9 +1,10 @@
 //! TUI shell: widget list + overlay callback + mouse selection.
 //!
 //! Mouse capture is enabled for:
-//! - Click-drag text selection in the log area (character, word, line modes)
-//! - Scrollbar dragging
+//! - Click-drag text selection in the log area (character, word, line, block modes)
+//! - Scrollbar dragging (click + drag to scroll)
 //! - Scroll wheel for scrolling
+//! - Selection persists and extends during scroll/auto-scroll
 //! Selection is copied to clipboard via OSC 52 on mouse release.
 
 use std::io::Write;
@@ -27,12 +28,18 @@ pub struct WidgetEntry {
 }
 
 /// Log lines, scroll state, and selection state.
+///
+/// Selection is stored in **content coordinates** (absolute wrapped-line row),
+/// not viewport coordinates. This means selection survives scrolling —
+/// it stays on the same content even when the viewport moves.
 pub struct TuiState {
     pub log_lines: Vec<String>,
     pub scroll_up: u16,
-    /// Selection range in visible-wrapped-line coordinates: (start_row, start_col, end_row, end_col).
-    /// None = no selection.
+    /// Selection in content (absolute) coordinates.
+    /// (start_row, start_col, end_row, end_col). None = no selection.
     pub selection: Option<(usize, usize, usize, usize)>,
+    /// Whether the selection is rectangular (Ctrl+drag block select).
+    pub selection_rect: bool,
 }
 
 impl Default for TuiState {
@@ -45,6 +52,7 @@ impl TuiState {
             log_lines: vec!["servatui interactive mode. Type 'help' for commands.".into()],
             scroll_up: 0,
             selection: None,
+            selection_rect: false,
         }
     }
 }
@@ -61,6 +69,13 @@ struct MouseState {
     last_click_time: Instant,
     last_click_pos: (u16, u16),
     click_mode: ClickMode,
+    /// Anchor position in content coordinates (where the drag started).
+    anchor: Option<(usize, usize)>,
+    /// Auto-scroll direction during drag past viewport edge.
+    /// None = no auto-scroll, Some(true) = scroll up, Some(false) = scroll down.
+    auto_scroll: Option<bool>,
+    /// Whether Ctrl is held (for rectangular selection).
+    ctrl_held: bool,
 }
 
 impl Default for MouseState {
@@ -72,6 +87,9 @@ impl Default for MouseState {
             last_click_time: Instant::now() - Duration::from_secs(10),
             last_click_pos: (0, 0),
             click_mode: ClickMode::Char,
+            anchor: None,
+            auto_scroll: None,
+            ctrl_held: false,
         }
     }
 }
@@ -81,8 +99,7 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || "-./:%_@~".contains(c)
 }
 
-/// Find word boundaries around (row, col) in the given lines.
-/// Returns (start_col, end_col) for the word at that position.
+/// Find word boundaries around col in the given line.
 fn word_boundaries(line: &str, col: usize) -> (usize, usize) {
     let chars: Vec<char> = line.chars().collect();
     if chars.is_empty() || col >= chars.len() {
@@ -107,23 +124,46 @@ fn osc52_copy(text: &str) {
     let _ = std::io::stdout().flush();
 }
 
-/// Extract selected text from visible wrapped lines.
+/// Paste from clipboard via OSC 52 read request.
+/// The terminal responds with the clipboard content, which arrives as terminal
+/// input. This sends the request; the response needs to be handled separately.
+fn osc52_paste() {
+    let _ = write!(std::io::stdout(), "\x1b]52;c;?\x1b\\");
+    let _ = std::io::stdout().flush();
+}
+
+/// Extract selected text from all wrapped lines (content coordinates).
 /// Strips ↪ prefixes from continuation lines and joins appropriately.
-fn extract_selection(lines: &[String], sr: usize, sc: usize, er: usize, ec: usize) -> String {
+fn extract_selection(
+    wrapped: &[String],
+    sr: usize, sc: usize, er: usize, ec: usize,
+    rect: bool,
+) -> String {
     let (sr, sc, er, ec) = if (sr, sc) > (er, ec) { (er, ec, sr, sc) } else { (sr, sc, er, ec) };
     let mut result = String::new();
-    for row in sr..=er {
-        if row >= lines.len() { break; }
-        let line = &lines[row];
-        let line = line.strip_prefix("↪ ").unwrap_or(line);
-        let chars: Vec<char> = line.chars().collect();
-        let col_start = if row == sr { sc.min(chars.len()) } else { 0 };
-        let col_end = if row == er { ec.min(chars.len()) } else { chars.len() };
-        if col_start < col_end {
-            result.extend(&chars[col_start..col_end]);
+
+    if rect {
+        // Rectangular: each row contributes the same column range
+        let (cmin, cmax) = (sc.min(ec), sc.max(ec));
+        for row in sr..=er {
+            if row >= wrapped.len() { break; }
+            let line = wrapped[row].strip_prefix("↪ ").unwrap_or(&wrapped[row]);
+            let chars: Vec<char> = line.chars().collect();
+            let s = cmin.min(chars.len());
+            let e = cmax.min(chars.len());
+            if s < e { result.extend(&chars[s..e]); }
+            if row < er { result.push('\n'); }
         }
-        if row < er {
-            result.push('\n');
+    } else {
+        // Normal: start-to-end contiguous selection
+        for row in sr..=er {
+            if row >= wrapped.len() { break; }
+            let line = wrapped[row].strip_prefix("↪ ").unwrap_or(&wrapped[row]);
+            let chars: Vec<char> = line.chars().collect();
+            let col_start = if row == sr { sc.min(chars.len()) } else { 0 };
+            let col_end = if row == er { ec.min(chars.len()) } else { chars.len() };
+            if col_start < col_end { result.extend(&chars[col_start..col_end]); }
+            if row < er { result.push('\n'); }
         }
     }
     result
@@ -132,7 +172,12 @@ fn extract_selection(lines: &[String], sr: usize, sc: usize, er: usize, ec: usiz
 /// A widget that renders pre-wrapped log lines with optional selection highlight.
 struct LogWidget {
     lines: Vec<String>,
+    /// Selection in content coordinates.
     selection: Option<(usize, usize, usize, usize)>,
+    /// Content row of the first visible line (viewport offset).
+    viewport_start: usize,
+    /// Whether selection is rectangular.
+    rect: bool,
 }
 
 impl ratatui::widgets::WidgetRef for LogWidget {
@@ -141,8 +186,13 @@ impl ratatui::widgets::WidgetRef for LogWidget {
 
         let gray = Style::default().fg(Color::DarkGray);
 
-        let sel = self.selection.map(|(sr, sc, er, ec)| {
-            if (sr, sc) > (er, ec) { (er, ec, sr, sc) } else { (sr, sc, er, ec) }
+        // Translate selection to viewport coordinates
+        let sel_vp = self.selection.map(|(sr, sc, er, ec)| {
+            let vsr = sr.saturating_sub(self.viewport_start);
+            let ver = er.saturating_sub(self.viewport_start);
+            let ordered = if (sr, sc) > (er, ec) { (er, ec, sr, sc) } else { (sr, sc, er, ec) };
+            (ordered.0.saturating_sub(self.viewport_start), ordered.1,
+             ordered.2.saturating_sub(self.viewport_start), ordered.3)
         });
 
         for (row, line) in self.lines.iter().enumerate() {
@@ -155,22 +205,26 @@ impl ratatui::widgets::WidgetRef for LogWidget {
                 if col >= area.width as usize { break; }
                 let x = area.x + col as u16;
 
-                // Determine if this cell is selected
-                let is_selected = match sel {
+                let is_selected = match sel_vp {
+                    Some((sr, sc, er, ec)) if self.rect => {
+                        // Rectangular: same column range for all rows
+                        let (cmin, cmax) = (sc.min(ec), sc.max(ec));
+                        row >= sr && row <= er && col >= cmin && col < cmax
+                    }
                     Some((sr, sc, er, ec)) => {
+                        // Normal contiguous
                         if row > sr && row < er { true }
                         else if row == sr && row == er { col >= sc && col < ec }
                         else if row == sr { col >= sc }
                         else if row == er { col < ec }
                         else { false }
                     }
-                    None => false,
+                    _ => false,
                 };
 
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(*ch);
                     if is_selected {
-                        // Inverse video for selection
                         cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
                     } else if is_cont && col < 2 {
                         cell.set_style(gray);
@@ -230,6 +284,16 @@ where
     result
 }
 
+/// Cached viewport info for mouse coordinate translation.
+struct ViewportCache {
+    log_area: ratatui::layout::Rect,
+    log_inner: ratatui::layout::Rect,
+    viewport_start: usize,
+    total_wrapped: usize,
+    wrapped: Vec<String>,
+    visible: Vec<String>,
+}
+
 #[cfg(feature = "tui")]
 fn tui_loop(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
@@ -242,18 +306,15 @@ fn tui_loop(
     on_overlay: &mut dyn FnMut(&mut Vec<WidgetEntry>),
     mouse: &mut MouseState,
 ) -> Result<(), String> {
-    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind, MouseButton};
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind, MouseButton};
     use ratatui::{
-        layout::{Constraint, Direction, Layout, Rect},
+        layout::{Constraint, Direction, Layout},
         widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, WidgetRef},
     };
     use textwrap::{Options, wrap};
     use tui_input::backend::crossterm::EventHandler;
 
-    // Track the log area's position for mouse coordinate translation
-    let mut log_area_cache: Option<Rect> = None;
-    let mut log_inner_cache: Option<Rect> = None;
-    let mut visible_lines_cache: Vec<String> = Vec::new();
+    let mut vp: Option<ViewportCache> = None;
 
     loop {
         terminal.draw(|f| {
@@ -266,9 +327,6 @@ fn tui_loop(
             let log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 0 });
             let log_height = log_inner.height as usize;
             let inner_width = log_inner.width as usize;
-
-            log_area_cache = Some(log_area);
-            log_inner_cache = Some(log_inner);
 
             // Pre-wrap log lines
             let wrapped: Vec<String> = state.log_lines.iter()
@@ -293,8 +351,16 @@ fn tui_loop(
             };
 
             let start = total_rows.saturating_sub(log_height).saturating_sub(state.scroll_up as usize);
-            let visible: Vec<String> = wrapped[start..].to_vec();
-            visible_lines_cache = visible.clone();
+            let visible: Vec<String> = if total_rows > 0 { wrapped[start..].to_vec() } else { vec![] };
+
+            vp = Some(ViewportCache {
+                log_area,
+                log_inner,
+                viewport_start: start,
+                total_wrapped: total_rows,
+                wrapped: wrapped.clone(),
+                visible: visible.clone(),
+            });
 
             f.render_widget(Clear, log_area);
             f.render_widget(Block::default().borders(Borders::ALL).title(title), log_area);
@@ -306,6 +372,8 @@ fn tui_loop(
                 widget: Box::new(LogWidget {
                     lines: visible,
                     selection: state.selection,
+                    viewport_start: start,
+                    rect: state.selection_rect,
                 }),
                 area: log_inner,
             });
@@ -345,21 +413,25 @@ fn tui_loop(
             ));
         }).map_err(|e| e.to_string())?;
 
-        if event::poll(Duration::from_millis(100)).map_err(|e| e.to_string())? {
+        // Use shorter poll when auto-scrolling for smooth UX
+        let poll_ms = if mouse.auto_scroll.is_some() { 30 } else { 100 };
+
+        if event::poll(Duration::from_millis(poll_ms)).map_err(|e| e.to_string())? {
             let ev = event::read().map_err(|e| e.to_string())?;
 
             match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    mouse.ctrl_held = key.modifiers.contains(KeyModifiers::CONTROL);
                     match key.code {
-                        KeyCode::PageUp => { state.scroll_up = state.scroll_up.saturating_add(5); state.selection = None; continue; }
-                        KeyCode::PageDown => { state.scroll_up = state.scroll_up.saturating_sub(5); state.selection = None; continue; }
-                        KeyCode::Home => { state.scroll_up = u16::MAX; state.selection = None; continue; }
-                        KeyCode::End => { state.scroll_up = 0; state.selection = None; continue; }
+                        KeyCode::PageUp => { state.scroll_up = state.scroll_up.saturating_add(5); continue; }
+                        KeyCode::PageDown => { state.scroll_up = state.scroll_up.saturating_sub(5); continue; }
+                        KeyCode::Home => { state.scroll_up = u16::MAX; continue; }
+                        KeyCode::End => { state.scroll_up = 0; continue; }
                         KeyCode::Up if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            state.scroll_up = state.scroll_up.saturating_add(1); state.selection = None; continue;
+                            state.scroll_up = state.scroll_up.saturating_add(1); continue;
                         }
                         KeyCode::Down if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            state.scroll_up = state.scroll_up.saturating_sub(1); state.selection = None; continue;
+                            state.scroll_up = state.scroll_up.saturating_sub(1); continue;
                         }
                         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) && input.value().is_empty() => {
                             return Ok(());
@@ -390,14 +462,14 @@ fn tui_loop(
                                     state.log_lines.push(format!("  {:<12} {}", p.name, p.help));
                                 }
                                 state.scroll_up = 0;
-                                state.selection = None;
+                                state.selection = None; // Clear on new output
                                 continue;
                             }
 
                             history.push(line.clone());
                             state.log_lines.push(format!("> {trimmed}"));
                             state.scroll_up = 0;
-                            state.selection = None;
+                            state.selection = None; // Clear on new output
 
                             let (cmd_name, args) = match trimmed.split_once(' ') {
                                 Some((n, r)) => (n, r),
@@ -441,71 +513,145 @@ fn tui_loop(
                     }
                 }
                 Event::Mouse(m) => {
-                    handle_mouse_event(m, state, mouse, &log_inner_cache, &log_area_cache, &visible_lines_cache);
+                    if let Some(ref vp) = vp {
+                        handle_mouse_event(m, state, mouse, vp);
+                    }
                 }
                 _ => {}
             }
+        } else {
+            // Poll timeout: handle auto-scroll during drag
+            if let (Some(ref vp), Some(scroll_up_dir)) = (&vp, mouse.auto_scroll) {
+                if mouse.selecting {
+                    let max_scroll = vp.total_wrapped.saturating_sub(vp.log_inner.height as usize);
+                    if scroll_up_dir {
+                        // Auto-scroll up (towards older content)
+                        if (state.scroll_up as usize) < max_scroll {
+                            state.scroll_up += 1;
+                        }
+                        // Extend selection to top of viewport
+                        let new_start = vp.total_wrapped.saturating_sub(vp.log_inner.height as usize)
+                            .saturating_sub(state.scroll_up as usize);
+                        if let Some(anchor) = mouse.anchor {
+                            update_selection(state, mouse, anchor, (new_start, 0), &vp.wrapped);
+                        }
+                    } else {
+                        // Auto-scroll down (towards newer content)
+                        if state.scroll_up > 0 {
+                            state.scroll_up -= 1;
+                        }
+                        // Extend selection to bottom of viewport
+                        let new_start = vp.total_wrapped.saturating_sub(vp.log_inner.height as usize)
+                            .saturating_sub(state.scroll_up as usize);
+                        let bottom_row = new_start + vp.log_inner.height as usize;
+                        if let Some(anchor) = mouse.anchor {
+                            update_selection(state, mouse, anchor, (bottom_row, usize::MAX), &vp.wrapped);
+                        }
+                    }
+                }
+            }
         }
     }
+}
+
+/// Update selection based on anchor + current position.
+fn update_selection(
+    state: &mut TuiState,
+    mouse: &mut MouseState,
+    anchor: (usize, usize),
+    current: (usize, usize),
+    wrapped: &[String],
+) {
+    // Clamp current col to line width
+    let cur_row = current.0.min(wrapped.len().saturating_sub(1));
+    let line_len = if cur_row < wrapped.len() {
+        wrapped[cur_row].strip_prefix("↪ ").unwrap_or(&wrapped[cur_row]).chars().count()
+    } else { 0 };
+    let cur_col = current.1.min(line_len);
+
+    match mouse.click_mode {
+        ClickMode::Char => {
+            state.selection = Some((anchor.0, anchor.1, cur_row, cur_col + 1));
+        }
+        ClickMode::Word => {
+            // Word mode: expand both anchor and current to word boundaries
+            if cur_row < wrapped.len() {
+                let (ws, we) = word_boundaries(&wrapped[cur_row], cur_col);
+                state.selection = Some((anchor.0, anchor.1, cur_row, we));
+            }
+        }
+        ClickMode::Line => {
+            // Line mode: select entire rows from anchor to current
+            state.selection = Some((anchor.0, 0, cur_row, line_len));
+        }
+    }
+
+    // Rectangular mode: flag for rendering
+    state.selection_rect = mouse.ctrl_held && mouse.click_mode == ClickMode::Char;
 }
 
 fn handle_mouse_event(
     m: crossterm::event::MouseEvent,
     state: &mut TuiState,
     mouse: &mut MouseState,
-    log_inner: &Option<ratatui::layout::Rect>,
-    log_area: &Option<ratatui::layout::Rect>,
-    visible: &[String],
+    vp: &ViewportCache,
 ) {
     use crossterm::event::{MouseEventKind, MouseButton};
-    let inner = match log_inner { Some(r) => *r, None => return };
-    let area = match log_area { Some(r) => *r, None => return };
 
-    // Translate screen coords to log-inner coords
+    let inner = vp.log_inner;
+    let area = vp.log_area;
+
+    // Check position zones
     let in_log = m.column >= inner.x
         && m.column < inner.x + inner.width
         && m.row >= inner.y
         && m.row < inner.y + inner.height;
 
-    // Scrollbar column: rightmost column of log area (just inside the right border)
     let scrollbar_col = area.x + area.width - 1;
     let on_scrollbar = m.column == scrollbar_col
         && m.row >= area.y + 1
         && m.row < area.y + area.height - 1;
 
+    // Translate screen to content coordinates
+    let content_row = |mouse_row: u16| -> usize {
+        let vp_row = mouse_row.saturating_sub(inner.y) as usize;
+        vp.viewport_start + vp_row
+    };
+    let content_col = |mouse_col: u16| -> usize {
+        mouse_col.saturating_sub(inner.x) as usize
+    };
+
     match m.kind {
         MouseEventKind::ScrollUp => {
             if in_log || on_scrollbar {
                 state.scroll_up = state.scroll_up.saturating_add(3);
-                state.selection = None;
             }
         }
         MouseEventKind::ScrollDown => {
             if in_log || on_scrollbar {
                 state.scroll_up = state.scroll_up.saturating_sub(3);
-                state.selection = None;
             }
         }
+
         MouseEventKind::Down(MouseButton::Left) => {
             if on_scrollbar {
                 mouse.scrollbar_drag = true;
-                // Jump to clicked position
-                let track_height = (area.height.saturating_sub(2)) as usize;
+                // Fix: top of scrollbar = top of content = high scroll_up
+                let track_h = (area.height.saturating_sub(2)) as usize;
                 let click_y = (m.row - area.y - 1) as usize;
-                let max_scroll = visible.len().saturating_sub(inner.height as usize);
-                state.scroll_up = ((click_y as u16) * (max_scroll as u16 + 1) / track_height.max(1) as u16).min(max_scroll as u16);
+                let max_scroll = vp.total_wrapped.saturating_sub(inner.height as usize);
+                state.scroll_up = max_scroll.saturating_sub(
+                    click_y * max_scroll / track_h.max(1)
+                ) as u16;
                 return;
             }
 
             if !in_log {
                 mouse.selecting = false;
+                mouse.auto_scroll = None;
                 state.selection = None;
                 return;
             }
-
-            // Translate to log coords
-            let row = (m.row - inner.y) as usize;
-            let col = (m.column - inner.x) as usize;
 
             // Click counting for double/triple click
             let now = Instant::now();
@@ -527,55 +673,72 @@ fn handle_mouse_event(
             };
 
             mouse.selecting = true;
+            mouse.auto_scroll = None;
 
-            // Set initial selection based on mode
+            let crow = content_row(m.row);
+            let ccol = content_col(m.column);
+
+            // Set anchor
             match mouse.click_mode {
                 ClickMode::Char => {
-                    state.selection = Some((row, col, row, col + 1));
+                    mouse.anchor = Some((crow, ccol));
+                    state.selection_rect = mouse.ctrl_held;
+                    state.selection = Some((crow, ccol, crow, ccol + 1));
                 }
                 ClickMode::Word => {
-                    if row < visible.len() {
-                        let (ws, we) = word_boundaries(&visible[row], col);
-                        state.selection = Some((row, ws, row, we));
+                    if crow < vp.wrapped.len() {
+                        let line = vp.wrapped[crow].strip_prefix("↪ ").unwrap_or(&vp.wrapped[crow]);
+                        let (ws, we) = word_boundaries(line, ccol);
+                        mouse.anchor = Some((crow, ws));
+                        state.selection = Some((crow, ws, crow, we));
                     }
                 }
                 ClickMode::Line => {
-                    if row < visible.len() {
-                        let len = visible[row].chars().count();
-                        state.selection = Some((row, 0, row, len));
-                    }
+                    let line_len = if crow < vp.wrapped.len() {
+                        vp.wrapped[crow].strip_prefix("↪ ").unwrap_or(&vp.wrapped[crow]).chars().count()
+                    } else { 0 };
+                    mouse.anchor = Some((crow, 0));
+                    state.selection = Some((crow, 0, crow, line_len));
                 }
             }
         }
+
         MouseEventKind::Drag(MouseButton::Left) => {
-            if mouse.scrollbar_drag && on_scrollbar {
-                let track_height = (area.height.saturating_sub(2)) as usize;
-                let click_y = (m.row - area.y - 1) as usize;
-                let max_scroll = visible.len().saturating_sub(inner.height as usize);
-                state.scroll_up = ((click_y as u16) * (max_scroll as u16 + 1) / track_height.max(1) as u16).min(max_scroll as u16);
+            if mouse.scrollbar_drag {
+                if on_scrollbar || m.column == scrollbar_col {
+                    let track_h = (area.height.saturating_sub(2)) as usize;
+                    let click_y = (m.row - area.y - 1) as usize;
+                    let max_scroll = vp.total_wrapped.saturating_sub(inner.height as usize);
+                    state.scroll_up = max_scroll.saturating_sub(
+                        click_y * max_scroll / track_h.max(1)
+                    ) as u16;
+                }
                 return;
             }
 
-            if !mouse.selecting || !in_log {
+            if !mouse.selecting {
                 return;
             }
 
-            let row = (m.row - inner.y) as usize;
-            let col = (m.column - inner.x) as usize;
+            // Check for auto-scroll: mouse above or below viewport
+            if m.row < inner.y {
+                mouse.auto_scroll = Some(true); // scroll up (older)
+                return;
+            } else if m.row >= inner.y + inner.height {
+                mouse.auto_scroll = Some(false); // scroll down (newer)
+                return;
+            } else {
+                mouse.auto_scroll = None;
+            }
 
-            // For Char mode, extend selection to current position
-            // For Word/Line mode, keep the initial selection on drag
-            // (matching terminal behavior: word/line select doesn't extend on drag)
-            if mouse.click_mode == ClickMode::Char {
-                // Get the anchor (the initial click position)
-                // We stored the selection with the anchor as the start
-                let anchor = match state.selection {
-                    Some((sr, sc, _, _)) => (sr, sc),
-                    None => (row, col),
-                };
-                state.selection = Some((anchor.0, anchor.1, row, col + 1));
+            // Normal drag within viewport
+            let crow = content_row(m.row);
+            let ccol = content_col(m.column);
+            if let Some(anchor) = mouse.anchor {
+                update_selection(state, mouse, anchor, (crow, ccol), &vp.wrapped);
             }
         }
+
         MouseEventKind::Up(MouseButton::Left) => {
             if mouse.scrollbar_drag {
                 mouse.scrollbar_drag = false;
@@ -584,20 +747,41 @@ fn handle_mouse_event(
 
             if mouse.selecting {
                 mouse.selecting = false;
+                mouse.auto_scroll = None;
 
                 // Copy selection to clipboard
                 if let Some((sr, sc, er, ec)) = state.selection {
-                    let text = extract_selection(visible, sr, sc, er, ec);
+                    let text = extract_selection(&vp.wrapped, sr, sc, er, ec, state.selection_rect);
                     if !text.is_empty() {
                         osc52_copy(&text);
                     }
                 }
             }
         }
+
         MouseEventKind::Down(MouseButton::Right) => {
-            // Right click: clear selection (simplification of "extend")
-            state.selection = None;
+            // Right click: extend selection to clicked position
+            if in_log && state.selection.is_some() {
+                let crow = content_row(m.row);
+                let ccol = content_col(m.column);
+                if let Some(anchor) = mouse.anchor {
+                    update_selection(state, mouse, anchor, (crow, ccol), &vp.wrapped);
+                    // Copy on extend
+                    if let Some((sr, sc, er, ec)) = state.selection {
+                        let text = extract_selection(&vp.wrapped, sr, sc, er, ec, state.selection_rect);
+                        if !text.is_empty() { osc52_copy(&text); }
+                    }
+                }
+            } else {
+                state.selection = None;
+            }
         }
+
+        MouseEventKind::Down(MouseButton::Middle) => {
+            // Middle click: paste from clipboard
+            osc52_paste();
+        }
+
         _ => {}
     }
 }
