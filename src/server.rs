@@ -47,9 +47,12 @@ impl ServerHandle {
                             stream,
                             reader: std::io::BufReader::new(reader),
                         };
-                        let ctx_any: &dyn Any = &*ctx;                        if let Err(e) = Self::handle_connection(&protocols, &mut conn, ctx_any) {
+                        let ctx_any: &dyn Any = &*ctx;
+                        eprintln!("[trace] server: accepted connection");
+                        if let Err(e) = Self::handle_connection(&protocols, &mut conn, ctx_any) {
                             eprintln!("Connection error: {e}");
                         }
+                        eprintln!("[trace] server: connection handler returned");
                     });
                 }
                 Err(e) => eprintln!("Accept error: {e}"),
@@ -63,18 +66,43 @@ impl ServerHandle {
         conn: &mut SocketConnection,
         ctx: &dyn Any,
     ) -> Result<(), String> {
-        let raw = conn.recv_bytes()?;
-        let trimmed = std::str::from_utf8(&raw).unwrap_or("").trim();
-        if trimmed.is_empty() {
-            return Ok(());
+        eprintln!("[trace] handle_connection: calling recv_bytes...");
+        match conn.recv_bytes() {
+            Ok(raw) => {
+                eprintln!("[trace] handle_connection: recv got {} bytes", raw.len());
+                let trimmed = std::str::from_utf8(&raw).unwrap_or("").trim();
+                if trimmed.is_empty() {
+                    eprintln!("[trace] handle_connection: empty input, returning Ok");
+                    return Ok(());
+                }
+                eprintln!("[trace] handle_connection: dispatching '{trimmed}'");
+                dispatch_protocol(protocols, trimmed, conn, ctx)
+            }
+            Err(e) if e.contains("connection closed") => {
+                eprintln!("[trace] handle_connection: client disconnected before sending data");
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("[trace] handle_connection: recv error: {e}");
+                Err(e)
+            }
         }
-        let cmd_name: String = serde_json::from_str(trimmed)
-            .map_err(|e| e.to_string())?;
-        let proto = protocols.iter()
-            .find(|p| p.name == cmd_name)
-            .ok_or_else(|| format!("Unknown command: {cmd_name}"))?;
-        proto.run_server(conn, ctx)
     }
+}
+
+fn dispatch_protocol(
+    protocols: &[Protocol],
+    cmd_str: &str,
+    conn: &mut SocketConnection,
+    ctx: &dyn Any,
+) -> Result<(), String> {
+    use crate::connection::{TypedConnection, RawConnection};
+    let cmd_name: String = serde_json::from_str(cmd_str)
+        .map_err(|e| e.to_string())?;
+    let proto = protocols.iter()
+        .find(|p| p.name == cmd_name)
+        .ok_or_else(|| format!("Unknown command: {cmd_name}"))?;
+    proto.run_server(conn, ctx)
 }
 
 /// Builder for assembling an App with protocols.
