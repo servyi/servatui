@@ -9,6 +9,8 @@
 
 pub mod connection;
 pub mod console;
+#[cfg(feature = "tui")]
+pub mod mouse;
 pub mod protocol;
 pub mod server;
 #[cfg(feature = "tui")]
@@ -20,3 +22,5 @@ pub use protocol::{Plugin, Protocol, ShellAction, Client, Server, ClientHead, Cl
 pub use server::{App, AppBuilder, ServerHandle};
 #[cfg(feature = "tui")]
 pub use tui::{run_tui, run_tui_with_overlay, TuiState, WidgetEntry, WIDGET_LOG, WIDGET_INPUT, WIDGET_SCROLLBAR};
+#[cfg(feature = "tui")]
+pub use mouse::MouseTracker;
