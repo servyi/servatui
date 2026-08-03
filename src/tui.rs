@@ -133,7 +133,8 @@ fn osc52_paste() {
 }
 
 /// Extract selected text from all wrapped lines (content coordinates).
-/// Strips ↪ prefixes from continuation lines and joins appropriately.
+/// Strips ↪ prefixes and does NOT add newlines between continuation rows
+/// (they're part of the same original line).
 fn extract_selection(
     wrapped: &[String],
     sr: usize, sc: usize, er: usize, ec: usize,
@@ -143,7 +144,6 @@ fn extract_selection(
     let mut result = String::new();
 
     if rect {
-        // Rectangular: each row contributes the same column range
         let (cmin, cmax) = (sc.min(ec), sc.max(ec));
         for row in sr..=er {
             if row >= wrapped.len() { break; }
@@ -152,10 +152,12 @@ fn extract_selection(
             let s = cmin.min(chars.len());
             let e = cmax.min(chars.len());
             if s < e { result.extend(&chars[s..e]); }
-            if row < er { result.push('\n'); }
+            if row < er {
+                let next_cont = wrapped.get(row + 1).map(|l| l.starts_with("↪ ")).unwrap_or(false);
+                if !next_cont { result.push('\n'); }
+            }
         }
     } else {
-        // Normal: start-to-end contiguous selection
         for row in sr..=er {
             if row >= wrapped.len() { break; }
             let line = wrapped[row].strip_prefix("↪ ").unwrap_or(&wrapped[row]);
@@ -163,7 +165,11 @@ fn extract_selection(
             let col_start = if row == sr { sc.min(chars.len()) } else { 0 };
             let col_end = if row == er { ec.min(chars.len()) } else { chars.len() };
             if col_start < col_end { result.extend(&chars[col_start..col_end]); }
-            if row < er { result.push('\n'); }
+            if row < er {
+                // Don't add \n if next row is a continuation (↪ ) of current line
+                let next_cont = wrapped.get(row + 1).map(|l| l.starts_with("↪ ")).unwrap_or(false);
+                if !next_cont { result.push('\n'); }
+            }
         }
     }
     result
@@ -186,17 +192,14 @@ impl ratatui::widgets::WidgetRef for LogWidget {
 
         let gray = Style::default().fg(Color::DarkGray);
 
-        // Translate selection to viewport coordinates
-        let sel_vp = self.selection.map(|(sr, sc, er, ec)| {
-            let vsr = sr.saturating_sub(self.viewport_start);
-            let ver = er.saturating_sub(self.viewport_start);
-            let ordered = if (sr, sc) > (er, ec) { (er, ec, sr, sc) } else { (sr, sc, er, ec) };
-            (ordered.0.saturating_sub(self.viewport_start), ordered.1,
-             ordered.2.saturating_sub(self.viewport_start), ordered.3)
+        // Selection in ordered form (top-left to bottom-right)
+        let sel = self.selection.map(|(sr, sc, er, ec)| {
+            if (sr, sc) > (er, ec) { (er, ec, sr, sc) } else { (sr, sc, er, ec) }
         });
 
         for (row, line) in self.lines.iter().enumerate() {
             if row >= area.height as usize { break; }
+            let content_row = self.viewport_start + row;
             let is_cont = line.starts_with("↪ ");
             let y = area.y + row as u16;
             let chars: Vec<char> = line.chars().collect();
@@ -205,21 +208,20 @@ impl ratatui::widgets::WidgetRef for LogWidget {
                 if col >= area.width as usize { break; }
                 let x = area.x + col as u16;
 
-                let is_selected = match sel_vp {
+                // Check selection using content_row directly (no viewport translation needed)
+                let is_selected = match sel {
                     Some((sr, sc, er, ec)) if self.rect => {
-                        // Rectangular: same column range for all rows
                         let (cmin, cmax) = (sc.min(ec), sc.max(ec));
-                        row >= sr && row <= er && col >= cmin && col < cmax
+                        content_row >= sr && content_row <= er && col >= cmin && col < cmax
                     }
                     Some((sr, sc, er, ec)) => {
-                        // Normal contiguous
-                        if row > sr && row < er { true }
-                        else if row == sr && row == er { col >= sc && col < ec }
-                        else if row == sr { col >= sc }
-                        else if row == er { col < ec }
+                        if content_row > sr && content_row < er { true }
+                        else if content_row == sr && content_row == er { col >= sc && col < ec }
+                        else if content_row == sr { col >= sc }
+                        else if content_row == er { col < ec }
                         else { false }
                     }
-                    _ => false,
+                    None => false,
                 };
 
                 if let Some(cell) = buf.cell_mut((x, y)) {
