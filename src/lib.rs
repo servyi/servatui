@@ -19,4 +19,4 @@ pub use console::{Console, InputSource, StdoutConsole, StdinInput, BufferConsole
 pub use protocol::{Plugin, Protocol, ShellAction, Client, Server, ClientHead, ClientBuilder, ServerBuilder};
 pub use server::{App, AppBuilder, ServerHandle};
 #[cfg(feature = "tui")]
-pub use tui::{run_tui, TuiState};
+pub use tui::{run_tui, run_tui_with_overlay, TuiState, WidgetEntry, WIDGET_LOG, WIDGET_INPUT, WIDGET_SCROLLBAR};

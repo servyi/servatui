@@ -13,7 +13,7 @@ tui = ["dep:crossterm", "dep:ratatui", "dep:tui-input", "dep:textwrap"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 crossterm = { version = "0.28", optional = true }
-ratatui = { version = "0.28", optional = true }
+ratatui = { version = "0.28", optional = true, features = ["unstable-widget-ref"] }
 tui-input = { version = "0.10", optional = true }
 textwrap = { version = "0.16", default-features = false, features = ["unicode-width"], optional = true }
 

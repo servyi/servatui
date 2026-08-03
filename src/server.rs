@@ -156,6 +156,17 @@ impl App {
         crate::tui::run_tui(&self.socket, &self.protocols)
     }
 
+    /// Run the TUI client with an overlay callback.
+    /// The callback receives `&mut Vec<WidgetEntry>` each frame, after
+    /// servatui has added its default widgets but before rendering.
+    #[cfg(feature = "tui")]
+    pub fn run_tui_with_overlay<F>(&self, on_overlay: F) -> Result<(), String>
+    where
+        F: FnMut(&mut Vec<crate::tui::WidgetEntry>) + 'static,
+    {
+        crate::tui::run_tui_with_overlay(&self.socket, &self.protocols, on_overlay)
+    }
+
     /// Check if server is running.
     pub fn server_running(&self) -> bool {
         SocketConnection::server_exists(&self.socket)
