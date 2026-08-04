@@ -100,10 +100,15 @@ fn is_word_char(c: char) -> bool {
 }
 
 /// Find word boundaries around col in the given line.
+/// If col points at a non-word character, selects just that character.
 fn word_boundaries(line: &str, col: usize) -> (usize, usize) {
     let chars: Vec<char> = line.chars().collect();
     if chars.is_empty() || col >= chars.len() {
         return (col, col);
+    }
+    // Non-word char: select just this character
+    if !is_word_char(chars[col]) {
+        return (col, col + 1);
     }
     let mut start = col;
     let mut end = col;
@@ -326,7 +331,7 @@ fn tui_loop(
                 .split(f.area());
 
             let log_area = chunks[0];
-            let log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 0 });
+            let log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
             let log_height = log_inner.height as usize;
             let inner_width = log_inner.width as usize;
 
@@ -557,6 +562,8 @@ fn tui_loop(
 }
 
 /// Update selection based on anchor + current position.
+/// The selection always includes BOTH the anchor character and the character
+/// under the current position.
 fn update_selection(
     state: &mut TuiState,
     mouse: &mut MouseState,
@@ -573,22 +580,27 @@ fn update_selection(
 
     match mouse.click_mode {
         ClickMode::Char => {
-            state.selection = Some((anchor.0, anchor.1, cur_row, cur_col + 1));
+            // Both anchor and current positions should be included.
+            // Use inclusive start + exclusive end, adjusting based on direction.
+            if (anchor.0, anchor.1) <= (cur_row, cur_col) {
+                // Dragging right/down: anchor is start (inclusive), current is end (inclusive → +1)
+                state.selection = Some((anchor.0, anchor.1, cur_row, cur_col + 1));
+            } else {
+                // Dragging left/up: current is start (inclusive), anchor is end (inclusive → +1)
+                state.selection = Some((cur_row, cur_col, anchor.0, anchor.1 + 1));
+            }
         }
         ClickMode::Word => {
-            // Word mode: expand both anchor and current to word boundaries
             if cur_row < wrapped.len() {
                 let (ws, we) = word_boundaries(&wrapped[cur_row], cur_col);
                 state.selection = Some((anchor.0, anchor.1, cur_row, we));
             }
         }
         ClickMode::Line => {
-            // Line mode: select entire rows from anchor to current
             state.selection = Some((anchor.0, 0, cur_row, line_len));
         }
     }
 
-    // Rectangular mode: flag for rendering
     state.selection_rect = mouse.ctrl_held && mouse.click_mode == ClickMode::Char;
 }
 
@@ -724,10 +736,30 @@ fn handle_mouse_event(
 
             // Check for auto-scroll: mouse above or below viewport
             if m.row < inner.y {
-                mouse.auto_scroll = Some(true); // scroll up (older)
+                // Auto-scroll up (toward older content) immediately
+                let max_scroll = vp.total_wrapped.saturating_sub(inner.height as usize);
+                if (state.scroll_up as usize) < max_scroll {
+                    state.scroll_up += 1;
+                }
+                let new_start = vp.total_wrapped.saturating_sub(inner.height as usize)
+                    .saturating_sub(state.scroll_up as usize);
+                if let Some(anchor) = mouse.anchor {
+                    update_selection(state, mouse, anchor, (new_start, 0), &vp.wrapped);
+                }
+                mouse.auto_scroll = Some(true);
                 return;
             } else if m.row >= inner.y + inner.height {
-                mouse.auto_scroll = Some(false); // scroll down (newer)
+                // Auto-scroll down (toward newer content) immediately
+                if state.scroll_up > 0 {
+                    state.scroll_up -= 1;
+                }
+                let new_start = vp.total_wrapped.saturating_sub(inner.height as usize)
+                    .saturating_sub(state.scroll_up as usize);
+                let bottom_row = new_start + inner.height as usize;
+                if let Some(anchor) = mouse.anchor {
+                    update_selection(state, mouse, anchor, (bottom_row, usize::MAX), &vp.wrapped);
+                }
+                mouse.auto_scroll = Some(false);
                 return;
             } else {
                 mouse.auto_scroll = None;
@@ -811,5 +843,212 @@ impl Console for TuiBufferConsole {
     }
     fn print_error(&mut self, text: &str) {
         self.lines.push(format!("Error: {text}"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Tests for mouse selection behavior
+// ═══════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_mouse_state() -> MouseState {
+        MouseState::default()
+    }
+
+    fn make_state(lines: Vec<&str>) -> TuiState {
+        TuiState {
+            log_lines: lines.into_iter().map(String::from).collect(),
+            scroll_up: 0,
+            selection: None,
+            selection_rect: false,
+        }
+    }
+
+    // ── Bug 3 test: leftward drag must include char under mouse ──────
+
+    #[test]
+    fn test_leftward_drag_includes_anchor_char() {
+        // Drag from col 5 to col 2 on the same row.
+        // The selection should include cols 2..=5 (inclusive both ends).
+        let mut state = make_state(vec!["ABCDEFGH"]);
+        let mut mouse = make_mouse_state();
+        mouse.selecting = true;
+        mouse.click_mode = ClickMode::Char;
+        mouse.anchor = Some((0, 5));
+
+        // Drag to col 2 (leftward)
+        let wrapped = state.log_lines.clone();
+        update_selection(&mut state, &mut mouse, (0, 5), (0, 2), &wrapped);
+
+        let (sr, sc, er, ec) = state.selection.unwrap();
+        // After ordering: start should be (0, 2), end should be (0, 6)
+        // So the selection covers cols 2,3,4,5 — both the anchor (5) and current (2)
+        assert_eq!((sr, sc), (0, 2), "leftward: start should be at current position");
+        assert_eq!((er, ec), (0, 6), "leftward: end should be anchor+1 (inclusive)");
+    }
+
+    #[test]
+    fn test_rightward_drag_includes_current_char() {
+        // Drag from col 2 to col 5 on the same row.
+        let mut state = make_state(vec!["ABCDEFGH"]);
+        let mut mouse = make_mouse_state();
+        mouse.selecting = true;
+        mouse.click_mode = ClickMode::Char;
+        mouse.anchor = Some((0, 2));
+
+        let wrapped = state.log_lines.clone();
+        update_selection(&mut state, &mut mouse, (0, 2), (0, 5), &wrapped);
+
+        let (sr, sc, er, ec) = state.selection.unwrap();
+        assert_eq!((sr, sc), (0, 2), "rightward: start should be at anchor");
+        assert_eq!((er, ec), (0, 6), "rightward: end should be current+1 (inclusive)");
+    }
+
+    #[test]
+    fn test_extract_leftward_drag_text() {
+        // Verify the extracted text includes both endpoints
+        let wrapped = vec!["ABCDEFGH".to_string()];
+        // Selection: cols 2..6 (CDEF)
+        let text = extract_selection(&wrapped, 0, 2, 0, 6, false);
+        assert_eq!(text, "CDEF", "should include both endpoints");
+    }
+
+    // ── Bug 2 test: content fits within bordered area ─────────────
+
+    #[test]
+    fn test_log_inner_area_excludes_borders() {
+        // The LogWidget must be given an area that excludes the top/bottom borders.
+        // With Margin { horizontal: 1, vertical: 1 }, a 10-row area gives 8 content rows.
+        let area = ratatui::layout::Rect::new(0, 0, 80, 10);
+        let inner = area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+        assert_eq!(inner.y, 1, "inner should start below top border");
+        assert_eq!(inner.height, 8, "inner height should exclude both borders");
+        assert_eq!(inner.x, 1, "inner should start right of left border");
+        assert_eq!(inner.width, 78, "inner width should exclude both borders");
+    }
+
+    // ── Bug 1 test: auto-scroll up during upward drag ─────────────
+
+    #[test]
+    fn test_auto_scroll_up_on_upward_drag() {
+        // When dragging above the viewport, scroll_up should increase.
+        // This tests the core logic: given a viewport and drag above,
+        // scroll_up should change and selection should extend upward.
+        let mut state = make_state(vec!["line1"; 100]);
+        state.scroll_up = 5;
+
+        let vp = ViewportCache {
+            log_area: ratatui::layout::Rect::new(0, 0, 80, 10),
+            log_inner: ratatui::layout::Rect::new(1, 1, 78, 8),
+            viewport_start: 87, // 100 - 8 - 5
+            total_wrapped: 100,
+            wrapped: (0..100).map(|i| format!("line{i}")).collect(),
+            visible: vec![],
+        };
+
+        let mut mouse = make_mouse_state();
+        mouse.selecting = true;
+        mouse.click_mode = ClickMode::Char;
+        mouse.anchor = Some((90, 3)); // Anchor somewhere in the middle
+
+        // Simulate drag to row 0 (above inner.y=1)
+        let scroll_before = state.scroll_up;
+        let m = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+            column: 10,
+            row: 0, // Above viewport
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        handle_mouse_event(m, &mut state, &mut mouse, &vp);
+
+        assert!(
+            state.scroll_up > scroll_before,
+            "auto-scroll up: scroll_up should increase (was {}, now {})",
+            scroll_before, state.scroll_up
+        );
+        assert!(state.selection.is_some(), "selection should be extended upward");
+    }
+
+    #[test]
+    fn test_auto_scroll_down_on_downward_drag() {
+        // When dragging below the viewport, scroll_up should decrease.
+        let mut state = make_state(vec!["line1"; 100]);
+        state.scroll_up = 5;
+
+        let vp = ViewportCache {
+            log_area: ratatui::layout::Rect::new(0, 0, 80, 10),
+            log_inner: ratatui::layout::Rect::new(1, 1, 78, 8),
+            viewport_start: 87,
+            total_wrapped: 100,
+            wrapped: (0..100).map(|i| format!("line{i}")).collect(),
+            visible: vec![],
+        };
+
+        let mut mouse = make_mouse_state();
+        mouse.selecting = true;
+        mouse.click_mode = ClickMode::Char;
+        mouse.anchor = Some((90, 3));
+
+        let scroll_before = state.scroll_up;
+        let m = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+            column: 10,
+            row: 10, // Below viewport (inner ends at row 8)
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        handle_mouse_event(m, &mut state, &mut mouse, &vp);
+
+        assert!(
+            state.scroll_up < scroll_before,
+            "auto-scroll down: scroll_up should decrease (was {}, now {})",
+            scroll_before, state.scroll_up
+        );
+        assert!(state.selection.is_some(), "selection should be extended downward");
+    }
+
+    // ── Word boundary tests ───────────────────────────────────────
+
+    #[test]
+    fn test_word_boundaries_middle() {
+        let line = "hello world foo";
+        // Click on 'o' in 'world' (col 7)
+        let (start, end) = word_boundaries(line, 7);
+        assert_eq!(start, 6, "word start");
+        assert_eq!(end, 11, "word end (exclusive)");
+    }
+
+    #[test]
+    fn test_word_boundaries_at_space() {
+        let line = "hello world";
+        // Click on the space (col 5)
+        let (start, end) = word_boundaries(line, 5);
+        assert_eq!(start, 5, "space is its own word");
+        assert_eq!(end, 6, "single char");
+    }
+
+    // ── Selection extraction tests ───────────────────────────────
+
+    #[test]
+    fn test_extract_multiline_no_continuation_newlines() {
+        let wrapped = vec![
+            "Hello World".to_string(),
+            "↪ continuation".to_string(),
+            "Next line".to_string(),
+        ];
+        // Select from row 0 col 0 to row 2 end
+        let text = extract_selection(&wrapped, 0, 0, 2, 9, false);
+        // Row 0 + continuation row 1 are same original line, no \n between them
+        // Row 2 is new line, \n before it
+        assert_eq!(text, "Hello Worldcontinuation\nNext line");
+    }
+
+    #[test]
+    fn test_extract_single_line() {
+        let wrapped = vec!["Hello World".to_string()];
+        let text = extract_selection(&wrapped, 0, 0, 0, 11, false);
+        assert_eq!(text, "Hello World");
     }
 }

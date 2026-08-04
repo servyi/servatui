@@ -57,3 +57,42 @@ C→S: sentinel ()
 
 Increment the minor version for every build. Shared between client and server.
 The version is part of the protocol — client detects mismatch and can restart server.
+
+### TUI Mouse Selection Testing
+
+The TUI uses mouse capture for text selection, scrollbar dragging, and scroll wheel.
+Changes to layout or mouse handling MUST be verified with both automated tests
+and the interactive mouse recorder.
+
+**Automated tests** (`src/tui.rs` `#[cfg(test)] mod tests`):
+- `test_leftward_drag_includes_anchor_char` — leftward drag must include both endpoints
+- `test_auto_scroll_up_on_upward_drag` — dragging above viewport scrolls immediately
+- `test_auto_scroll_down_on_downward_drag` — dragging below viewport scrolls immediately
+- `test_log_inner_area_excludes_borders` — content area must not overlap borders
+- `test_extract_multiline_no_continuation_newlines` — wrapped lines join without \n
+- `test_word_boundaries_*` — double-click word selection boundaries
+
+Run: `cargo test --features tui -- tui::tests`
+
+**Interactive mouse recorder** (`examples/mouse-recorder.rs`):
+```sh
+cargo run --features tui --example mouse-recorder 2>&1 | tee /tmp/recorder.log
+```
+Guides through click, drag, double-click, scroll, scrollbar, ctrl+drag, right-click,
+middle-click. Highlights mouse position in real-time. Dumps all raw events + Rust
+test replay code on exit.
+
+**When to use the recorder:**
+- After changing the layout (border sizes, widget positions)
+- After changing mouse event routing logic
+- When debugging scrollbar or selection issues
+- When verifying behavior on a new terminal emulator
+
+**Process for adding a new test:**
+1. Write the test in `src/tui.rs` `mod tests`
+2. `git stash` your changes
+3. `git checkout -b verify-tests HEAD~1` (or the commit before your fix)
+4. Apply only the test code, run it — it MUST fail (proves the bug exists)
+5. `git checkout main && git stash pop`
+6. Run the test — it MUST pass (proves the fix works)
+7. `git branch -D verify-tests`
