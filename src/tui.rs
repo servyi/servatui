@@ -1051,4 +1051,73 @@ mod tests {
         let text = extract_selection(&wrapped, 0, 0, 0, 11, false);
         assert_eq!(text, "Hello World");
     }
+
+    // ── Terminal size reactivity tests ───────────────────────────
+    //
+    // The layout must fill the entire terminal window and adapt to
+    // different sizes. These tests verify the layout computation
+    // produces the correct dimensions for small and large terminals.
+
+    #[test]
+    fn test_layout_fills_small_terminal() {
+        let area = ratatui::layout::Rect::new(0, 0, 40, 10);
+        let chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Min(3),
+                ratatui::layout::Constraint::Length(3),
+            ])
+            .split(area);
+
+        let log_area = chunks[0];
+        let log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+
+        assert_eq!(log_area.height, 7, "log area should be height-3");
+        assert_eq!(log_area.width, 40, "log area should be full width");
+        assert_eq!(log_inner.width, 38, "inner width = area - 2 borders");
+        assert_eq!(log_inner.height, 5, "inner height = log_area - 2 borders");
+    }
+
+    #[test]
+    fn test_layout_fills_large_terminal() {
+        let area = ratatui::layout::Rect::new(0, 0, 200, 50);
+        let chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Min(3),
+                ratatui::layout::Constraint::Length(3),
+            ])
+            .split(area);
+
+        let log_area = chunks[0];
+        let log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+
+        assert_eq!(log_area.height, 47, "log area should be height-3");
+        assert_eq!(log_area.width, 200, "log area should be full width");
+        assert_eq!(log_inner.width, 198);
+        assert_eq!(log_inner.height, 45);
+    }
+
+    #[test]
+    fn test_layout_adapts_between_sizes() {
+        let compute = |w: u16, h: u16| {
+            let area = ratatui::layout::Rect::new(0, 0, w, h);
+            let chunks = ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .constraints([
+                    ratatui::layout::Constraint::Min(3),
+                    ratatui::layout::Constraint::Length(3),
+                ])
+                .split(area);
+            let log_inner = chunks[0].inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+            (log_inner.width, log_inner.height)
+        };
+
+        let small = compute(40, 10);
+        let large = compute(200, 50);
+
+        assert_ne!(small, large, "layout must differ for different terminal sizes");
+        assert_eq!(small, (38, 5));
+        assert_eq!(large, (198, 45));
+    }
 }
