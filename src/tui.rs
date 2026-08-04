@@ -121,6 +121,43 @@ fn word_boundaries(line: &str, col: usize) -> (usize, usize) {
     (start, end)
 }
 
+/// Read terminal size from COLUMNS and LINES environment variables.
+/// Returns None if either is missing, invalid, or zero.
+/// Inside nested containers (podman inside toolbox), ioctl(TIOCGWINSZ)
+/// returns the intermediate PTY's size. The shell updates $COLUMNS/$LINES
+/// on SIGWINCH, and these propagate correctly through container boundaries.
+fn terminal_size_from_env() -> Option<(u16, u16)> {
+    let cols = std::env::var("COLUMNS").ok()?;
+    let lines = std::env::var("LINES").ok()?;
+    parse_terminal_size(&cols, &lines)
+}
+
+/// Parse COLUMNS and LINES strings into a size. Returns None if invalid or zero.
+fn parse_terminal_size(cols: &str, lines: &str) -> Option<(u16, u16)> {
+    let w: u16 = cols.parse().ok()?;
+    let h: u16 = lines.parse().ok()?;
+    if w == 0 || h == 0 { return None; }
+    Some((w, h))
+}
+
+/// Detect terminal size: try ioctl first, fall back to env vars.
+/// Used before each draw() to handle nested containers where ioctl
+/// returns stale PTY dimensions.
+fn detect_terminal_size() -> (u16, u16) {
+    // Try ioctl via crossterm
+    if let Ok((w, h)) = crossterm::terminal::size() {
+        if w > 0 && h > 0 {
+            return (w, h);
+        }
+    }
+    // Fallback: env vars (set by shell, propagate through containers)
+    if let Some(size) = terminal_size_from_env() {
+        return size;
+    }
+    // Last resort
+    (80, 24)
+}
+
 /// Copy text to clipboard via OSC 52 escape sequence.
 fn osc52_copy(text: &str) {
     use base64::{Engine, engine::general_purpose};
@@ -324,6 +361,13 @@ fn tui_loop(
     let mut vp: Option<ViewportCache> = None;
 
     loop {
+        // Detect terminal size (handles nested containers via env var fallback)
+        let (w, h) = detect_terminal_size();
+        let term_size = terminal.size().unwrap_or(ratatui::layout::Size::new(80, 24));
+        if term_size.width != w || term_size.height != h {
+            terminal.resize(ratatui::layout::Rect::new(0, 0, w, h)).ok();
+        }
+
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -1129,58 +1173,31 @@ mod tests {
 
     #[test]
     fn test_size_from_env_vars() {
-        // The function should parse COLUMNS and LINES from the environment
-        std::env::set_var("COLUMNS", "200");
-        std::env::set_var("LINES", "50");
-
-        let size = terminal_size_from_env();
-        assert_eq!(size, Some((200, 50)), "should parse COLUMNS and LINES");
-
-        std::env::remove_var("COLUMNS");
-        std::env::remove_var("LINES");
+        assert_eq!(parse_terminal_size("200", "50"), Some((200, 50)));
     }
 
     #[test]
     fn test_size_from_env_missing() {
-        std::env::remove_var("COLUMNS");
-        std::env::remove_var("LINES");
-
-        let size = terminal_size_from_env();
-        assert_eq!(size, None, "should return None when env vars are missing");
+        // Empty strings simulate missing env vars (var().ok() returns None before this)
+        assert_eq!(parse_terminal_size("", "50"), None);
+        assert_eq!(parse_terminal_size("100", ""), None);
     }
 
     #[test]
     fn test_size_from_env_partial() {
-        std::env::set_var("COLUMNS", "100");
-        std::env::remove_var("LINES");
-
-        let size = terminal_size_from_env();
-        assert_eq!(size, None, "should return None if only one var is set");
-
-        std::env::remove_var("COLUMNS");
+        assert_eq!(parse_terminal_size("100", ""), None);
     }
 
     #[test]
     fn test_size_from_env_invalid() {
-        std::env::set_var("COLUMNS", "not_a_number");
-        std::env::set_var("LINES", "50");
-
-        let size = terminal_size_from_env();
-        assert_eq!(size, None, "should return None for non-numeric values");
-
-        std::env::remove_var("COLUMNS");
-        std::env::remove_var("LINES");
+        assert_eq!(parse_terminal_size("not_a_number", "50"), None);
+        assert_eq!(parse_terminal_size("100", "abc"), None);
     }
 
     #[test]
     fn test_size_from_env_zero() {
-        std::env::set_var("COLUMNS", "0");
-        std::env::set_var("LINES", "0");
-
-        let size = terminal_size_from_env();
-        assert_eq!(size, None, "should return None for zero dimensions");
-
-        std::env::remove_var("COLUMNS");
-        std::env::remove_var("LINES");
+        assert_eq!(parse_terminal_size("0", "50"), None);
+        assert_eq!(parse_terminal_size("100", "0"), None);
+        assert_eq!(parse_terminal_size("0", "0"), None);
     }
 }
