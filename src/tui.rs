@@ -1120,4 +1120,67 @@ mod tests {
         assert_eq!(small, (38, 5));
         assert_eq!(large, (198, 45));
     }
+
+    // ── Terminal size detection tests ────────────────────────────
+    //
+    // Inside nested containers (podman inside toolbox), ioctl(TIOCGWINSZ)
+    // returns the intermediate PTY's size, not the real terminal size.
+    // $COLUMNS and $LINES env vars propagate correctly through containers.
+
+    #[test]
+    fn test_size_from_env_vars() {
+        // The function should parse COLUMNS and LINES from the environment
+        std::env::set_var("COLUMNS", "200");
+        std::env::set_var("LINES", "50");
+
+        let size = terminal_size_from_env();
+        assert_eq!(size, Some((200, 50)), "should parse COLUMNS and LINES");
+
+        std::env::remove_var("COLUMNS");
+        std::env::remove_var("LINES");
+    }
+
+    #[test]
+    fn test_size_from_env_missing() {
+        std::env::remove_var("COLUMNS");
+        std::env::remove_var("LINES");
+
+        let size = terminal_size_from_env();
+        assert_eq!(size, None, "should return None when env vars are missing");
+    }
+
+    #[test]
+    fn test_size_from_env_partial() {
+        std::env::set_var("COLUMNS", "100");
+        std::env::remove_var("LINES");
+
+        let size = terminal_size_from_env();
+        assert_eq!(size, None, "should return None if only one var is set");
+
+        std::env::remove_var("COLUMNS");
+    }
+
+    #[test]
+    fn test_size_from_env_invalid() {
+        std::env::set_var("COLUMNS", "not_a_number");
+        std::env::set_var("LINES", "50");
+
+        let size = terminal_size_from_env();
+        assert_eq!(size, None, "should return None for non-numeric values");
+
+        std::env::remove_var("COLUMNS");
+        std::env::remove_var("LINES");
+    }
+
+    #[test]
+    fn test_size_from_env_zero() {
+        std::env::set_var("COLUMNS", "0");
+        std::env::set_var("LINES", "0");
+
+        let size = terminal_size_from_env();
+        assert_eq!(size, None, "should return None for zero dimensions");
+
+        std::env::remove_var("COLUMNS");
+        std::env::remove_var("LINES");
+    }
 }
