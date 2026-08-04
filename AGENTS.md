@@ -88,11 +88,11 @@ test replay code on exit.
 - When debugging scrollbar or selection issues
 - When verifying behavior on a new terminal emulator
 
-**Process for adding a new test:**
-1. Write the test in `src/tui.rs` `mod tests`
-2. `git stash` your changes
-3. `git checkout -b verify-tests HEAD~1` (or the commit before your fix)
-4. Apply only the test code, run it — it MUST fail (proves the bug exists)
-5. `git checkout main && git stash pop`
-6. Run the test — it MUST pass (proves the fix works)
-7. `git branch -D verify-tests`
+**Process for adding a new test (test-driven):**
+1. Write the test in `src/tui.rs` `mod tests` BEFORE writing the fix
+2. Commit: "add failing test for bug X" (CI shows red)
+3. Write the fix
+4. Commit: "fix bug X" (CI shows green)
+
+The test must fail against the current code first. If it passes, the test
+is wrong or the bug doesn't exist. Fix the test or investigate before proceeding.
