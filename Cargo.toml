@@ -17,6 +17,7 @@ ratatui = { version = "0.28", optional = true, features = ["unstable-widget-ref"
 tui-input = { version = "0.10", optional = true }
 textwrap = { version = "0.16", default-features = false, features = ["unicode-width"], optional = true }
 base64 = { version = "0.22", optional = true }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
@@ -29,4 +30,8 @@ name = "echo"
 
 [[example]]
 name = "mouse-recorder"
+required-features = ["tui"]
+
+[[example]]
+name = "size-check"
 required-features = ["tui"]
