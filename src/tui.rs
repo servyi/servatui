@@ -81,8 +81,6 @@ struct MouseState {
     /// Auto-scroll direction during drag past viewport edge.
     /// None = no auto-scroll, Some(true) = scroll up, Some(false) = scroll down.
     auto_scroll: Option<bool>,
-    /// Whether Ctrl is held (for rectangular selection).
-    ctrl_held: bool,
 }
 
 impl Default for MouseState {
@@ -96,7 +94,6 @@ impl Default for MouseState {
             click_mode: ClickMode::Char,
             anchor: None,
             auto_scroll: None,
-            ctrl_held: false,
         }
     }
 }
@@ -576,7 +573,6 @@ where
 
             match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    mouse.ctrl_held = key.modifiers.contains(KeyModifiers::CONTROL);
                     match key.code {
                         KeyCode::PageUp => { state.scroll_up = state.scroll_up.saturating_add(5); continue; }
                         KeyCode::PageDown => { state.scroll_up = state.scroll_up.saturating_sub(5); continue; }
@@ -721,8 +717,11 @@ fn update_selection(
 ) {
     // Clamp current col to line width
     let cur_row = current.0.min(wrapped.len().saturating_sub(1));
+    // Display length (includes the "↪ " indent): the drag column is a display
+    // column, so clamping to the content-only length would clip the last char(s)
+    // of a continuation row.
     let line_len = if cur_row < wrapped.len() {
-        wrapped[cur_row].strip_prefix("↪ ").unwrap_or(&wrapped[cur_row]).chars().count()
+        wrapped[cur_row].chars().count()
     } else { 0 };
     let cur_col = current.1.min(line_len);
 
@@ -748,8 +747,6 @@ fn update_selection(
             state.selection = Some((anchor.0, 0, cur_row, line_len));
         }
     }
-
-    state.selection_rect = mouse.ctrl_held && mouse.click_mode == ClickMode::Char;
 }
 
 fn handle_mouse_event(
@@ -758,7 +755,7 @@ fn handle_mouse_event(
     mouse: &mut MouseState,
     vp: &ViewportCache,
 ) {
-    use crossterm::event::{MouseEventKind, MouseButton};
+    use crossterm::event::{KeyModifiers, MouseEventKind, MouseButton};
 
     let inner = vp.log_inner;
     let area = vp.log_area;
@@ -837,23 +834,30 @@ fn handle_mouse_event(
             let ccol = content_col(m.column);
 
             // Set anchor
+            // Rectangular (column) selection is Alt+drag, like VS Code. Decided
+            // at mouse-down from the event modifiers (not a sticky flag), so it
+            // can't get stuck on after a stray key press.
+            let alt = m.modifiers.contains(KeyModifiers::ALT);
             match mouse.click_mode {
                 ClickMode::Char => {
                     mouse.anchor = Some((crow, ccol));
-                    state.selection_rect = mouse.ctrl_held;
+                    state.selection_rect = alt;
                     state.selection = Some((crow, ccol, crow, ccol + 1));
                 }
                 ClickMode::Word => {
+                    state.selection_rect = false;
                     if crow < vp.wrapped.len() {
-                        let line = vp.wrapped[crow].strip_prefix("↪ ").unwrap_or(&vp.wrapped[crow]);
-                        let (ws, we) = word_boundaries(line, ccol);
+                        // Pass the full wrapped row (with "↪ " indent): the column
+                        // is a display column, so the word boundaries must be too.
+                        let (ws, we) = word_boundaries(&vp.wrapped[crow], ccol);
                         mouse.anchor = Some((crow, ws));
                         state.selection = Some((crow, ws, crow, we));
                     }
                 }
                 ClickMode::Line => {
+                    state.selection_rect = false;
                     let line_len = if crow < vp.wrapped.len() {
-                        vp.wrapped[crow].strip_prefix("↪ ").unwrap_or(&vp.wrapped[crow]).chars().count()
+                        vp.wrapped[crow].chars().count()
                     } else { 0 };
                     mouse.anchor = Some((crow, 0));
                     state.selection = Some((crow, 0, crow, line_len));
@@ -1096,6 +1100,83 @@ mod tests {
         let end = "↪ world".chars().count();
         // cols 3..end on row 0, then all of the continuation → "llo world"
         assert_eq!(extract_selection(&wrapped, 0, 3, 1, end, false), "llo world");
+    }
+
+    #[test]
+    fn test_select_through_last_char_of_continuation_row() {
+        // Continuation row "↪ def": content "def" is at display cols 2,3,4.
+        // Drag from 'd' (col 2) to 'f' (col 4) — must include the last char 'f'.
+        // (Previously the drag column was clamped to the *content* length 3,
+        //  clipping 'f'.)
+        let wrapped = vec!["↪ def".to_string()];
+        let mut state = make_state(vec!["irrelevant"]);
+        let mut mouse = make_mouse_state();
+        mouse.selecting = true;
+        mouse.click_mode = ClickMode::Char;
+        mouse.anchor = Some((0, 2));
+        update_selection(&mut state, &mut mouse, (0, 2), (0, 4), &wrapped);
+        let (sr, sc, er, ec) = state.selection.unwrap();
+        assert_eq!(extract_selection(&wrapped, sr, sc, er, ec, false), "def");
+    }
+
+    #[test]
+    fn test_line_select_continuation_row_includes_all_content() {
+        // Line (triple-click) on a continuation row "↪ def" must select all of
+        // "def", not just the first character.
+        let wrapped = vec!["↪ def".to_string()];
+        let mut state = make_state(vec!["irrelevant"]);
+        let mut mouse = make_mouse_state();
+        mouse.selecting = true;
+        mouse.click_mode = ClickMode::Line;
+        mouse.anchor = Some((0, 0));
+        update_selection(&mut state, &mut mouse, (0, 0), (0, 4), &wrapped);
+        let (sr, sc, er, ec) = state.selection.unwrap();
+        assert_eq!(extract_selection(&wrapped, sr, sc, er, ec, false), "def");
+    }
+
+    fn click_vp() -> ViewportCache {
+        ViewportCache {
+            log_area: ratatui::layout::Rect::new(0, 0, 80, 10),
+            log_inner: ratatui::layout::Rect::new(0, 0, 80, 10),
+            viewport_start: 0,
+            total_wrapped: 1,
+            wrapped: vec!["hello".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_alt_click_starts_rectangular_selection() {
+        // Alt+drag = rectangular (column) selection, VS Code-style.
+        use crossterm::event::{MouseButton, KeyModifiers, MouseEvent, MouseEventKind};
+        let vp = click_vp();
+        let mut state = make_state(vec!["hello"]);
+        let mut mouse = make_mouse_state();
+        let ev = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 0,
+            modifiers: KeyModifiers::ALT,
+        };
+        handle_mouse_event(ev, &mut state, &mut mouse, &vp);
+        assert!(state.selection_rect, "Alt+click must start a rectangular selection");
+    }
+
+    #[test]
+    fn test_plain_click_is_not_rectangular() {
+        // A plain click (no modifiers) must NOT be rectangular — regression
+        // guard against the old sticky-Ctrl behavior that flipped rect on.
+        use crossterm::event::{MouseButton, KeyModifiers, MouseEvent, MouseEventKind};
+        let vp = click_vp();
+        let mut state = make_state(vec!["hello"]);
+        let mut mouse = make_mouse_state();
+        let ev = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse_event(ev, &mut state, &mut mouse, &vp);
+        assert!(!state.selection_rect, "plain click must not be rectangular");
     }
 
     // ── Bug 2 test: content fits within bordered area ─────────────
