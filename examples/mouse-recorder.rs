@@ -5,7 +5,6 @@
 //! Follow on-screen instructions. The mouse position is highlighted in real-time.
 //! Button states shown in footer. Press 'q' to quit and dump events.
 
-use std::io::Write;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEventKind, MouseEvent, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
@@ -15,8 +14,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, WidgetRef},
+    widgets::{Block, Borders, Clear},
     Terminal,
 };
 use servyi_servatui::MouseTracker;
@@ -47,12 +45,6 @@ impl RecordedEvent {
     }
 }
 
-struct Marker {
-    text: &'static str,
-    col: u16,    // column relative to inner area
-    color: Color,
-}
-
 fn main() -> std::io::Result<()> {
     let instructions = vec![
         "1. Click once on the red 'X'",
@@ -65,14 +57,6 @@ fn main() -> std::io::Result<()> {
         "8. Right-click anywhere in log",
         "9. Middle-click anywhere in log",
         "DONE - press 'q' to dump events",
-    ];
-
-    let markers = vec![
-        Marker { text: "X", col: 2, color: Color::Red },
-        Marker { text: "A", col: 2, color: Color::Green },
-        Marker { text: "B", col: 44, color: Color::Blue },
-        Marker { text: "C", col: 2, color: Color::Magenta },
-        Marker { text: "D", col: 44, color: Color::Magenta },
     ];
 
     enable_raw_mode()?;
@@ -166,9 +150,8 @@ fn main() -> std::io::Result<()> {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     match k.code {
                         crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Char('Q') => break,
-                        crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Enter => {
-                            if step < instructions.len() - 1 { step += 1; }
-                        }
+                        crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Enter
+                            if step < instructions.len() - 1 => { step += 1; }
                         _ => {}
                     }
                 }
@@ -176,9 +159,8 @@ fn main() -> std::io::Result<()> {
                     tracker.process(&m);
                     events.push(RecordedEvent::from_mouse(&m, start));
                     match m.kind {
-                        MouseEventKind::Up(_) | MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-                            if step < instructions.len() - 1 { step += 1; }
-                        }
+                        MouseEventKind::Up(_) | MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                            if step < instructions.len() - 1 => { step += 1; }
                         _ => {}
                     }
                 }
@@ -222,7 +204,5 @@ fn main() -> std::io::Result<()> {
     }
     println!("];");
 
-    // Suppress unused warning
-    let _ = markers;
     Ok(())
 }

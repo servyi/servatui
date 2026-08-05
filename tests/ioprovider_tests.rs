@@ -767,7 +767,7 @@ fn test_server_ctx_wrong_type_downcast() {
 
 #[test]
 fn test_malformed_json_on_wire() {
-    use servyi_servatui::{SocketConnection, TypedConnection, RawConnection};
+    use servyi_servatui::{SocketConnection, RawConnection};
 
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("badjson.sock");

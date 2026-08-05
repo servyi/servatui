@@ -96,7 +96,6 @@ fn dispatch_protocol(
     conn: &mut SocketConnection,
     ctx: &dyn Any,
 ) -> Result<(), String> {
-    use crate::connection::{TypedConnection, RawConnection};
     let cmd_name: String = serde_json::from_str(cmd_str)
         .map_err(|e| e.to_string())?;
     let proto = protocols.iter()
@@ -167,13 +166,23 @@ impl App {
     /// Run a single command as a CLI client.
     /// Returns (rendered lines, raw server response bytes).
     pub fn run_cli_command_raw(&self, command: &str, args: &str) -> Result<(Vec<String>, Vec<u8>), String> {
-        let mut conn = SocketConnection::connect(&self.socket)?;
-        conn.send_typed(&command.to_string())?;
         let proto = self.protocols.iter()
             .find(|p| p.name == command)
             .ok_or_else(|| format!("Unknown command: {command}"))?;
         let mut console = BufferConsole::new();
         let mut input = NoInput;
+
+        let mut conn = match SocketConnection::connect(&self.socket) {
+            Ok(c) => c,
+            Err(e) => {
+                if let Some(offline) = &proto.offline {
+                    offline(args, &mut console)?;
+                    return Ok((console.lines, Vec::new()));
+                }
+                return Err(e);
+            }
+        };
+        conn.send_typed(&command.to_string())?;
         let raw = proto.run_client(args, &mut conn, &mut console, &mut input)?;
         Ok((console.lines, raw))
     }

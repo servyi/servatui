@@ -5,6 +5,7 @@
 //! - Scrollbar dragging (click + drag to scroll)
 //! - Scroll wheel for scrolling
 //! - Selection persists and extends during scroll/auto-scroll
+//!
 //! Selection is copied to clipboard via OSC 52 on mouse release.
 
 use std::io::Write;
@@ -40,6 +41,10 @@ pub struct TuiState {
     pub selection: Option<(usize, usize, usize, usize)>,
     /// Whether the selection is rectangular (Ctrl+drag block select).
     pub selection_rect: bool,
+    /// Command history (entered lines), for Ctrl+Up/Ctrl+Down recall.
+    pub history: Vec<String>,
+    /// Current position in `history` during recall; `None` = not recalling.
+    pub history_idx: Option<usize>,
 }
 
 impl Default for TuiState {
@@ -53,6 +58,8 @@ impl TuiState {
             scroll_up: 0,
             selection: None,
             selection_rect: false,
+            history: Vec::new(),
+            history_idx: None,
         }
     }
 }
@@ -140,22 +147,114 @@ fn parse_terminal_size(cols: &str, lines: &str) -> Option<(u16, u16)> {
     Some((w, h))
 }
 
-/// Detect terminal size: try ioctl first, fall back to env vars.
-/// Used before each draw() to handle nested containers where ioctl
-/// returns stale PTY dimensions.
-fn detect_terminal_size() -> (u16, u16) {
-    // Try ioctl via crossterm
-    if let Ok((w, h)) = crossterm::terminal::size() {
-        if w > 0 && h > 0 {
-            return (w, h);
-        }
+/// Query the terminal emulator directly with `CSI 18 t`. The reply
+/// (`CSI 8 ; cols ; rows t`) carries the *true* window size from the outermost
+/// emulator, bypassing a frozen kernel PTY (e.g. podman-in-toolbox where
+/// `ioctl(TIOCGWINSZ)` never updates after start). Returns `None` if the
+/// terminal doesn't answer within ~15 ms. Done while crossterm is idle (top of
+/// the render loop, before its `event::read`), so it can't swallow the reply.
+#[cfg(unix)]
+fn query_csi_18t() -> Option<(u16, u16)> {
+    use std::io::{Read, Write};
+    use std::os::unix::io::AsRawFd;
+
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .ok()?;
+    tty.write_all(b"\x1b[18t").ok()?;
+    let _ = tty.flush();
+
+    // Wait briefly for the reply (terminals answer in a few ms).
+    let mut pfd = libc::pollfd { fd: tty.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    if unsafe { libc::poll(&mut pfd, 1, 15) } <= 0 {
+        return None;
     }
-    // Fallback: env vars (set by shell, propagate through containers)
-    if let Some(size) = terminal_size_from_env() {
+
+    let mut buf = [0u8; 32];
+    let n = tty.read(&mut buf).ok()?;
+    let resp = std::str::from_utf8(&buf[..n]).ok()?;
+
+    // Reply: CSI 8 ; <rows> ; <cols> t  (xterm reports height before width).
+    let inner = resp.strip_prefix("\x1b[8;")?.strip_suffix('t')?;
+    let mut it = inner.split(';');
+    let rows: u16 = it.next()?.parse().ok()?;
+    let cols: u16 = it.next()?.parse().ok()?;
+    Some((cols, rows))
+}
+
+/// Throttled `CSI 18 t` result — re-queries at most every 500 ms so the render
+/// loop isn't stalled each frame by the synchronous terminal round-trip.
+#[cfg(unix)]
+fn csi_size_cached() -> Option<(u16, u16)> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    type CsiCache = Option<(Instant, Option<(u16, u16)>)>;
+    static CACHE: Mutex<CsiCache> = Mutex::new(None);
+    let mut guard = CACHE.lock().unwrap();
+    let now = Instant::now();
+    let stale = matches!(*guard, Some((t, _)) if now.duration_since(t) >= Duration::from_millis(500));
+    if stale || guard.is_none() {
+        *guard = Some((now, query_csi_18t()));
+    }
+    (*guard).and_then(|(_, s)| s)
+}
+
+/// Detect terminal size. Prefers a direct `CSI 18 t` query of the terminal
+/// emulator (which reflects live resizes even when the kernel PTY is frozen in
+/// nested containers), then falls back to the ioctl via crossterm, then env.
+fn detect_terminal_size() -> (u16, u16) {
+    #[cfg(unix)]
+    if let Some(size) = csi_size_cached() {
         return size;
     }
-    // Last resort
-    (80, 24)
+    crossterm::terminal::size()
+        .ok()
+        .filter(|&(w, h)| w > 0 && h > 0)
+        .or_else(terminal_size_from_env)
+        .unwrap_or((80, 24))
+}
+
+/// A ratatui backend wrapper that reports [`detect_terminal_size`] from its
+/// `size()`. ratatui's per-draw `autoresize()` reads the backend size to size
+/// its buffer — so by reporting the `CSI 18 t` size here (instead of the
+/// crossterm `ioctl`, which is frozen in nested containers), the whole frame
+/// resizes correctly. Every other call delegates to the inner backend.
+#[cfg(feature = "tui")]
+struct SizeOverrideBackend<B> {
+    inner: B,
+}
+
+#[cfg(feature = "tui")]
+impl<B: ratatui::backend::Backend> ratatui::backend::Backend for SizeOverrideBackend<B> {
+    fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        self.inner.draw(content)
+    }
+    fn append_lines(&mut self, n: u16) -> std::io::Result<()> { self.inner.append_lines(n) }
+    fn hide_cursor(&mut self) -> std::io::Result<()> { self.inner.hide_cursor() }
+    fn show_cursor(&mut self) -> std::io::Result<()> { self.inner.show_cursor() }
+    fn get_cursor_position(&mut self) -> std::io::Result<ratatui::layout::Position> {
+        self.inner.get_cursor_position()
+    }
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(&mut self, pos: P) -> std::io::Result<()> {
+        self.inner.set_cursor_position(pos)
+    }
+    fn clear(&mut self) -> std::io::Result<()> { self.inner.clear() }
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> std::io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+    fn size(&self) -> std::io::Result<ratatui::layout::Size> {
+        let (w, h) = detect_terminal_size();
+        Ok(ratatui::layout::Size::new(w, h))
+    }
+    fn window_size(&mut self) -> std::io::Result<ratatui::backend::WindowSize> {
+        self.inner.window_size()
+    }
+    fn flush(&mut self) -> std::io::Result<()> { self.inner.flush() }
 }
 
 /// Copy text to clipboard via OSC 52 escape sequence.
@@ -307,18 +406,15 @@ where
     execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture).map_err(|e| e.to_string())?;
     std::io::stdout().flush().ok();
 
-    let backend = CrosstermBackend::new(std::io::stdout());
+    let backend = SizeOverrideBackend { inner: CrosstermBackend::new(std::io::stdout()) };
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
 
     let mut state = TuiState::new();
     let mut input = Input::default();
-    let mut history: Vec<String> = Vec::new();
-    let mut history_idx: Option<usize> = None;
     let mut mouse = MouseState::default();
 
     let result = tui_loop(
         &mut terminal, &mut state, &mut input,
-        &mut history, &mut history_idx,
         socket, protocols, &mut on_overlay, &mut mouse,
     );
 
@@ -335,25 +431,25 @@ struct ViewportCache {
     viewport_start: usize,
     total_wrapped: usize,
     wrapped: Vec<String>,
-    visible: Vec<String>,
 }
 
 #[cfg(feature = "tui")]
-fn tui_loop(
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+fn tui_loop<B>(
+    terminal: &mut ratatui::Terminal<B>,
     state: &mut TuiState,
     input: &mut tui_input::Input,
-    history: &mut Vec<String>,
-    history_idx: &mut Option<usize>,
     socket: &Path,
     protocols: &[Protocol],
     on_overlay: &mut dyn FnMut(&mut Vec<WidgetEntry>),
     mouse: &mut MouseState,
-) -> Result<(), String> {
-    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind, MouseButton};
+) -> Result<(), String>
+where
+    B: ratatui::backend::Backend,
+{
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
     use ratatui::{
         layout::{Constraint, Direction, Layout},
-        widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, WidgetRef},
+        widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     };
     use textwrap::{Options, wrap};
     use tui_input::backend::crossterm::EventHandler;
@@ -361,13 +457,6 @@ fn tui_loop(
     let mut vp: Option<ViewportCache> = None;
 
     loop {
-        // Detect terminal size (handles nested containers via env var fallback)
-        let (w, h) = detect_terminal_size();
-        let term_size = terminal.size().unwrap_or(ratatui::layout::Size::new(80, 24));
-        if term_size.width != w || term_size.height != h {
-            terminal.resize(ratatui::layout::Rect::new(0, 0, w, h)).ok();
-        }
-
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -410,7 +499,6 @@ fn tui_loop(
                 viewport_start: start,
                 total_wrapped: total_rows,
                 wrapped: wrapped.clone(),
-                visible: visible.clone(),
             });
 
             f.render_widget(Clear, log_area);
@@ -488,7 +576,7 @@ fn tui_loop(
                             return Ok(());
                         }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            input.reset(); *history_idx = None; continue;
+                            input.reset(); state.history_idx = None; continue;
                         }
                         KeyCode::Tab => {
                             let word = input.value().split_whitespace().next().unwrap_or("");
@@ -502,7 +590,7 @@ fn tui_loop(
                         KeyCode::Enter => {
                             let line = input.value().to_string();
                             input.reset();
-                            *history_idx = None;
+                            state.history_idx = None;
                             let trimmed = line.trim();
                             if trimmed.is_empty() { continue; }
                             if trimmed == "exit" || trimmed == "quit" { return Ok(()); }
@@ -517,7 +605,7 @@ fn tui_loop(
                                 continue;
                             }
 
-                            history.push(line.clone());
+                            state.history.push(line.clone());
                             state.log_lines.push(format!("> {trimmed}"));
                             state.scroll_up = 0;
                             state.selection = None; // Clear on new output
@@ -541,23 +629,23 @@ fn tui_loop(
                             }
                         }
                         KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            if !history.is_empty() {
-                                *history_idx = Some(match *history_idx {
+                            if !state.history.is_empty() {
+                                state.history_idx = Some(match state.history_idx {
                                     Some(0) => 0,
                                     Some(i) => i - 1,
-                                    None => history.len() - 1,
+                                    None => state.history.len() - 1,
                                 });
-                                *input = tui_input::Input::new(history[history_idx.unwrap()].clone());
+                                *input = tui_input::Input::new(state.history[state.history_idx.unwrap()].clone());
                             }
                         }
                         KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            match *history_idx {
-                                Some(i) if i + 1 < history.len() => {
+                            match state.history_idx {
+                                Some(i) if i + 1 < state.history.len() => {
                                     let new_idx = i + 1;
-                                    *history_idx = Some(new_idx);
-                                    *input = tui_input::Input::new(history[new_idx].clone());
+                                    state.history_idx = Some(new_idx);
+                                    *input = tui_input::Input::new(state.history[new_idx].clone());
                                 }
-                                _ => { *history_idx = None; input.reset(); }
+                                _ => { state.history_idx = None; input.reset(); }
                             }
                         }
                         _ => { let _ = input.handle_event(&Event::Key(key)); }
@@ -636,7 +724,7 @@ fn update_selection(
         }
         ClickMode::Word => {
             if cur_row < wrapped.len() {
-                let (ws, we) = word_boundaries(&wrapped[cur_row], cur_col);
+                let (_, we) = word_boundaries(&wrapped[cur_row], cur_col);
                 state.selection = Some((anchor.0, anchor.1, cur_row, we));
             }
         }
@@ -667,7 +755,7 @@ fn handle_mouse_event(
 
     let scrollbar_col = area.x + area.width - 1;
     let on_scrollbar = m.column == scrollbar_col
-        && m.row >= area.y + 1
+        && m.row > area.y
         && m.row < area.y + area.height - 1;
 
     // Translate screen to content coordinates
@@ -680,15 +768,11 @@ fn handle_mouse_event(
     };
 
     match m.kind {
-        MouseEventKind::ScrollUp => {
-            if in_log || on_scrollbar {
-                state.scroll_up = state.scroll_up.saturating_add(3);
-            }
+        MouseEventKind::ScrollUp if in_log || on_scrollbar => {
+            state.scroll_up = state.scroll_up.saturating_add(3);
         }
-        MouseEventKind::ScrollDown => {
-            if in_log || on_scrollbar {
-                state.scroll_up = state.scroll_up.saturating_sub(3);
-            }
+        MouseEventKind::ScrollDown if in_log || on_scrollbar => {
+            state.scroll_up = state.scroll_up.saturating_sub(3);
         }
 
         MouseEventKind::Down(MouseButton::Left) => {
@@ -865,10 +949,20 @@ fn handle_mouse_event(
 }
 
 fn execute_command(proto: &Protocol, args: &str, socket: &Path) -> Result<Vec<String>, String> {
-    let mut conn = SocketConnection::connect(socket)?;
-    conn.send_typed(&proto.name.to_string())?;
     let mut console = TuiBufferConsole::new();
     let mut input_src = crate::console::NoInput;
+
+    let mut conn = match SocketConnection::connect(socket) {
+        Ok(c) => c,
+        Err(e) => {
+            if let Some(offline) = &proto.offline {
+                offline(args, &mut console)?;
+                return Ok(console.lines);
+            }
+            return Err(e);
+        }
+    };
+    conn.send_typed(&proto.name.to_string())?;
     proto.run_client(args, &mut conn, &mut console, &mut input_src)?;
     Ok(console.lines)
 }
@@ -905,9 +999,7 @@ mod tests {
     fn make_state(lines: Vec<&str>) -> TuiState {
         TuiState {
             log_lines: lines.into_iter().map(String::from).collect(),
-            scroll_up: 0,
-            selection: None,
-            selection_rect: false,
+            ..TuiState::new()
         }
     }
 
@@ -990,7 +1082,6 @@ mod tests {
             viewport_start: 87, // 100 - 8 - 5
             total_wrapped: 100,
             wrapped: (0..100).map(|i| format!("line{i}")).collect(),
-            visible: vec![],
         };
 
         let mut mouse = make_mouse_state();
@@ -1028,7 +1119,6 @@ mod tests {
             viewport_start: 87,
             total_wrapped: 100,
             wrapped: (0..100).map(|i| format!("line{i}")).collect(),
-            visible: vec![],
         };
 
         let mut mouse = make_mouse_state();

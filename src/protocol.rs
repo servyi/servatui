@@ -22,6 +22,11 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::connection::{RawConnection, TypedConnection};
 use crate::console::{Console, InputSource};
 
+/// Type-erased parse closure shared across the builder chain.
+type ParseFn = Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>;
+/// Type-erased offline-fallback closure (see [`Protocol::offline`]).
+type OfflineFn = Arc<dyn Fn(&str, &mut dyn Console) -> Result<(), String> + Send + Sync>;
+
 // ═══════════════════════════════════════════════════════════════
 // Core types
 // ═══════════════════════════════════════════════════════════════
@@ -145,7 +150,7 @@ impl ParseBuilder {
         T: Serialize + DeserializeOwned + Send + Sync + 'static,
         F: Fn(&str) -> Result<T, String> + Send + Sync + 'static,
     {
-        let parse_bytes: Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync> =
+        let parse_bytes: ParseFn =
             Arc::new(move |s: &str| {
                 let t: T = parse(s)?;
                 serde_json::to_vec(&t).map_err(|e| e.to_string())
@@ -164,7 +169,7 @@ impl ParseBuilder {
 pub struct Client<T> {
     name: &'static str,
     help: &'static str,
-    parse: Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>,
+    parse: ParseFn,
     steps: Vec<Box<dyn ErasedStep>>,
     _ph: PhantomData<T>,
 }
@@ -197,6 +202,7 @@ where
         Protocol {
             name: self.name, help: self.help,
             parse: self.parse, steps: self.steps,
+            offline: None,
         }
     }
 }
@@ -205,7 +211,7 @@ where
 pub struct Server<T> {
     name: &'static str,
     help: &'static str,
-    parse: Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>,
+    parse: ParseFn,
     steps: Vec<Box<dyn ErasedStep>>,
     _ph: PhantomData<T>,
 }
@@ -254,6 +260,7 @@ where
         Protocol {
             name: self.name, help: self.help,
             parse: self.parse, steps: self.steps,
+            offline: None,
         }
     }
 }
@@ -265,11 +272,30 @@ where
 pub struct Protocol {
     pub name: &'static str,
     pub help: &'static str,
-    parse: Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>,
+    parse: ParseFn,
     steps: Vec<Box<dyn ErasedStep>>,
+    /// Optional fallback invoked when the server is unreachable (socket connect
+    /// fails). Lets a command produce a local answer (e.g. `version` prints the
+    /// client version) without a running server. If `None`, the connect error
+    /// propagates as before.
+    pub offline: Option<OfflineFn>,
 }
 
 impl Protocol {
+    /// Register a fallback invoked when the server is unreachable.
+    ///
+    /// `execute_command` (TUI) and `run_cli_command` (CLI) catch a socket
+    /// connect failure and, if a handler is registered, run it with the args
+    /// and a console instead of returning an error. Lets commands such as
+    /// `version` report a local answer when no server is running.
+    pub fn offline<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&str, &mut dyn Console) -> Result<(), String> + Send + Sync + 'static,
+    {
+        self.offline = Some(Arc::new(f));
+        self
+    }
+
     /// CLIENT side: parse args, walk steps, communicate with server.
     /// Returns the raw bytes of the last server response.
     pub fn run_client(
