@@ -274,8 +274,22 @@ fn osc52_paste() {
 }
 
 /// Extract selected text from all wrapped lines (content coordinates).
-/// Strips ↪ prefixes and does NOT add newlines between continuation rows
-/// (they're part of the same original line).
+/// Returns `(content, indent_len)`: the row with any "↪ " continuation indent
+/// stripped, plus the number of display columns that indent occupied.
+/// Selection columns are display coordinates (they include the indent), so
+/// callers must subtract `indent_len` to index into `content`.
+fn row_content(row: &str) -> (&str, usize) {
+    const INDENT: &str = "↪ ";
+    match row.strip_prefix(INDENT) {
+        Some(content) => (content, INDENT.chars().count()),
+        None => (row, 0),
+    }
+}
+
+/// Strips ↪ prefixes and reinserts the space consumed at each wrap, so the
+/// copied text matches the original line. Continuation rows (same original
+/// line) are joined with a single space; different original lines are
+/// separated by a newline.
 fn extract_selection(
     wrapped: &[String],
     sr: usize, sc: usize, er: usize, ec: usize,
@@ -288,28 +302,30 @@ fn extract_selection(
         let (cmin, cmax) = (sc.min(ec), sc.max(ec));
         for row in sr..=er {
             if row >= wrapped.len() { break; }
-            let line = wrapped[row].strip_prefix("↪ ").unwrap_or(&wrapped[row]);
-            let chars: Vec<char> = line.chars().collect();
-            let s = cmin.min(chars.len());
-            let e = cmax.min(chars.len());
+            let (content, indent) = row_content(&wrapped[row]);
+            let chars: Vec<char> = content.chars().collect();
+            let s = cmin.saturating_sub(indent).min(chars.len());
+            let e = cmax.saturating_sub(indent).min(chars.len());
             if s < e { result.extend(&chars[s..e]); }
             if row < er {
                 let next_cont = wrapped.get(row + 1).map(|l| l.starts_with("↪ ")).unwrap_or(false);
-                if !next_cont { result.push('\n'); }
+                result.push(if next_cont { ' ' } else { '\n' });
             }
         }
     } else {
         for row in sr..=er {
             if row >= wrapped.len() { break; }
-            let line = wrapped[row].strip_prefix("↪ ").unwrap_or(&wrapped[row]);
-            let chars: Vec<char> = line.chars().collect();
-            let col_start = if row == sr { sc.min(chars.len()) } else { 0 };
-            let col_end = if row == er { ec.min(chars.len()) } else { chars.len() };
+            let (content, indent) = row_content(&wrapped[row]);
+            let chars: Vec<char> = content.chars().collect();
+            let col_start = if row == sr { sc.saturating_sub(indent).min(chars.len()) } else { 0 };
+            let col_end = if row == er { ec.saturating_sub(indent).min(chars.len()) } else { chars.len() };
             if col_start < col_end { result.extend(&chars[col_start..col_end]); }
             if row < er {
-                // Don't add \n if next row is a continuation (↪ ) of current line
+                // A continuation row is the same original line, wrapped: reinsert
+                // the space textwrap consumed at the break. A non-continuation row
+                // is a different original line → newline.
                 let next_cont = wrapped.get(row + 1).map(|l| l.starts_with("↪ ")).unwrap_or(false);
-                if !next_cont { result.push('\n'); }
+                result.push(if next_cont { ' ' } else { '\n' });
             }
         }
     }
@@ -1052,6 +1068,36 @@ mod tests {
         assert_eq!(text, "CDEF", "should include both endpoints");
     }
 
+    #[test]
+    fn test_extract_continuation_row_not_shifted_by_indent() {
+        // Logical line "ABCDEFGH" wrapped into two display rows:
+        //   row 0 "ABCD"      (no indent)
+        //   row 1 "↪ EFGH"    (continuation; content "EFGH" at display cols 2..=5)
+        // Selection columns are display coords (they include the "↪ " indent), so
+        // "EFGH" is cols 2..6 on row 1. Extraction must NOT be shifted by the
+        // indent and must yield "EFGH".
+        let wrapped = vec!["ABCD".to_string(), "↪ EFGH".to_string()];
+        assert_eq!(extract_selection(&wrapped, 1, 2, 1, 6, false), "EFGH");
+    }
+
+    #[test]
+    fn test_extract_across_wrap_keeps_break_space() {
+        // "hello world" wrapped at the space → ["hello", "↪ world"].
+        // Copying the whole line must reinsert the space consumed at the wrap.
+        let wrapped = vec!["hello".to_string(), "↪ world".to_string()];
+        let end = "↪ world".chars().count(); // display length of the last row
+        assert_eq!(extract_selection(&wrapped, 0, 0, 1, end, false), "hello world");
+    }
+
+    #[test]
+    fn test_extract_partial_across_wrap_keeps_break_space() {
+        // Select from the middle of the first row into its continuation row.
+        let wrapped = vec!["he-llo".to_string(), "↪ world".to_string()];
+        let end = "↪ world".chars().count();
+        // cols 3..end on row 0, then all of the continuation → "llo world"
+        assert_eq!(extract_selection(&wrapped, 0, 3, 1, end, false), "llo world");
+    }
+
     // ── Bug 2 test: content fits within bordered area ─────────────
 
     #[test]
@@ -1174,9 +1220,10 @@ mod tests {
         ];
         // Select from row 0 col 0 to row 2 end
         let text = extract_selection(&wrapped, 0, 0, 2, 9, false);
-        // Row 0 + continuation row 1 are same original line, no \n between them
-        // Row 2 is new line, \n before it
-        assert_eq!(text, "Hello Worldcontinuation\nNext line");
+        // Row 0 + continuation row 1 are the same original line: joined with the
+        // space consumed at the wrap (no newline).
+        // Row 2 is a new line → newline before it.
+        assert_eq!(text, "Hello World continuation\nNext line");
     }
 
     #[test]
