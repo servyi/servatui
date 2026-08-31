@@ -283,12 +283,72 @@ fn row_content(row: &str) -> (&str, usize) {
     }
 }
 
+/// Wrap `line` to `width` columns, prefixing continuation rows with `indent`,
+/// returning `(display_row, offset)` pairs where `offset` is the character
+/// position within `line` at which the row's content begins.
+///
+/// Runs the same public textwrap pipeline `textwrap::wrap` uses
+/// (`find_words` → `split_words` → `break_words` → wrap algorithm), so the
+/// rows are byte-identical to `wrap`'s output; the word slices carry exact
+/// source positions, which `wrap`'s returned strings do not.
+#[cfg(feature = "tui")]
+fn wrap_with_offsets(line: &str, width: usize, indent: &str) -> Vec<(String, usize)> {
+    use textwrap::core::{break_words, display_width};
+    use textwrap::word_splitters::split_words;
+    use textwrap::{WordSeparator, WordSplitter, WrapAlgorithm};
+
+    let line_widths = [width, width.saturating_sub(display_width(indent))];
+    let separator = WordSeparator::new();
+    let splitter = WordSplitter::HyphenSplitter;
+    let words = split_words(separator.find_words(line), &splitter);
+    let broken = break_words(words, line_widths[1]);
+    let groups = WrapAlgorithm::new().wrap(&broken, &line_widths);
+
+    let base = line.as_ptr() as usize;
+    let mut rows = Vec::new();
+    for (i, group) in groups.iter().enumerate() {
+        let (start, end) = match (group.first(), group.last()) {
+            (Some(f), Some(l)) => (
+                f.word.as_ptr() as usize - base,
+                l.word.as_ptr() as usize - base + l.word.len(),
+            ),
+            _ => {
+                // Empty group (e.g. leading-whitespace lines): an empty row.
+                rows.push((String::new(), 0));
+                continue;
+            }
+        };
+        let content = &line[start..end];
+        let offset = line[..start].chars().count();
+        let display = if i == 0 {
+            content.to_string()
+        } else {
+            format!("{indent}{content}")
+        };
+        rows.push((display, offset));
+    }
+    if rows.is_empty() {
+        rows.push((String::new(), 0));
+    }
+    rows
+}
+
+/// Original-line character column for a display `(row, col)` position: the
+/// row's content offset plus the column within the row's content (the "↪ "
+/// indent is not part of the content). Rectangular selection columns live in
+/// these original-line coordinates.
+fn orig_col(wrapped: &[String], offsets: &[usize], row: usize, display_col: usize) -> usize {
+    let indent = wrapped.get(row).map(|w| row_content(w).1).unwrap_or(0);
+    offsets.get(row).copied().unwrap_or(0) + display_col.saturating_sub(indent)
+}
+
 /// Strips ↪ prefixes and reinserts the space consumed at each wrap, so the
 /// copied text matches the original line. Continuation rows (same original
 /// line) are joined with a single space; different original lines are
 /// separated by a newline.
 fn extract_selection(
     wrapped: &[String],
+    offsets: &[usize],
     sr: usize, sc: usize, er: usize, ec: usize,
     rect: bool,
 ) -> String {
@@ -296,17 +356,24 @@ fn extract_selection(
     let mut result = String::new();
 
     if rect {
+        // Rectangular selection is content-based: the columns are positions in
+        // the ORIGINAL logical line, not screen columns. Each row in the span
+        // contributes the characters whose original position falls in
+        // [cmin, cmax); rows that don't reach the column contribute a blank
+        // line, preserving the box's shape.
         let (cmin, cmax) = (sc.min(ec), sc.max(ec));
         for row in sr..=er {
             if row >= wrapped.len() { break; }
-            let (content, indent) = row_content(&wrapped[row]);
+            let (content, _) = row_content(&wrapped[row]);
             let chars: Vec<char> = content.chars().collect();
-            let s = cmin.saturating_sub(indent).min(chars.len());
-            let e = cmax.saturating_sub(indent).min(chars.len());
-            if s < e { result.extend(&chars[s..e]); }
+            let off = offsets.get(row).copied().unwrap_or(0);
+            let start = cmin.max(off);
+            let end = cmax.min(off + chars.len());
+            if start < end {
+                result.extend(&chars[start - off..end - off]);
+            }
             if row < er {
-                let next_cont = wrapped.get(row + 1).map(|l| l.starts_with("↪ ")).unwrap_or(false);
-                result.push(if next_cont { ' ' } else { '\n' });
+                result.push('\n');
             }
         }
     } else {
@@ -338,6 +405,8 @@ struct LogWidget {
     viewport_start: usize,
     /// Whether selection is rectangular.
     rect: bool,
+    /// Per content row: char offset into its original line (content coords).
+    offsets: Vec<usize>,
 }
 
 impl ratatui::widgets::WidgetRef for LogWidget {
@@ -365,8 +434,22 @@ impl ratatui::widgets::WidgetRef for LogWidget {
                 // Check selection using content_row directly (no viewport translation needed)
                 let is_selected = match sel {
                     Some((sr, sc, er, ec)) if self.rect => {
+                        // Content-based rectangle: highlight chars whose
+                        // ORIGINAL-line position is in [cmin, cmax). The "↪ "
+                        // indent is a marker, never part of the content.
                         let (cmin, cmax) = (sc.min(ec), sc.max(ec));
-                        content_row >= sr && content_row <= er && col >= cmin && col < cmax
+                        if content_row >= sr && content_row <= er {
+                            let indent = row_content(line).1;
+                            if col >= indent {
+                                let o = self.offsets.get(content_row).copied().unwrap_or(0)
+                                    + (col - indent);
+                                o >= cmin && o < cmax
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
                     }
                     Some((sr, sc, er, ec)) => {
                         if content_row > sr && content_row < er { true }
@@ -444,6 +527,8 @@ struct ViewportCache {
     viewport_start: usize,
     total_wrapped: usize,
     wrapped: Vec<String>,
+    /// Per wrapped row: char offset into its original line (content coords).
+    offsets: Vec<usize>,
 }
 
 #[cfg(feature = "tui")]
@@ -464,7 +549,6 @@ where
         layout::{Constraint, Direction, Layout},
         widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     };
-    use textwrap::{Options, wrap};
     use tui_input::backend::crossterm::EventHandler;
 
     let mut vp: Option<ViewportCache> = None;
@@ -481,17 +565,18 @@ where
             let log_height = log_inner.height as usize;
             let inner_width = log_inner.width as usize;
 
-            // Pre-wrap log lines
-            let wrapped: Vec<String> = state.log_lines.iter()
-                .flat_map(|s| {
-                    let clean = s.rsplit_once('\r').map(|(_, last)| last).unwrap_or(s);
-                    let clean = clean.replace('\t', "    ");
-                    let opts = Options::new(inner_width)
-                        .subsequent_indent("↪ ")
-                        .break_words(true);
-                    wrap(&clean, opts).into_iter().map(|cow| cow.into_owned()).collect::<Vec<_>>()
-                })
-                .collect();
+            // Pre-wrap log lines, remembering each row's offset into its
+            // original line (content coordinates for rectangular selection).
+            let mut wrapped: Vec<String> = Vec::with_capacity(state.log_lines.len());
+            let mut offsets: Vec<usize> = Vec::with_capacity(state.log_lines.len());
+            for s in &state.log_lines {
+                let clean = s.rsplit_once('\r').map(|(_, last)| last).unwrap_or(s);
+                let clean = clean.replace('\t', "    ");
+                for (row, off) in wrap_with_offsets(&clean, inner_width, "↪ ") {
+                    wrapped.push(row);
+                    offsets.push(off);
+                }
+            }
 
             let total_rows = wrapped.len();
             let max_scroll = total_rows.saturating_sub(log_height);
@@ -512,6 +597,7 @@ where
                 viewport_start: start,
                 total_wrapped: total_rows,
                 wrapped: wrapped.clone(),
+                offsets: offsets.clone(),
             });
 
             f.render_widget(Clear, log_area);
@@ -526,6 +612,7 @@ where
                     selection: state.selection,
                     viewport_start: start,
                     rect: state.selection_rect,
+                    offsets: offsets.clone(),
                 }),
                 area: log_inner,
             });
@@ -684,7 +771,7 @@ where
                         let new_start = vp.total_wrapped.saturating_sub(vp.log_inner.height as usize)
                             .saturating_sub(state.scroll_up as usize);
                         if let Some(anchor) = mouse.anchor {
-                            update_selection(state, mouse, anchor, (new_start, 0), &vp.wrapped);
+                            update_selection(state, mouse, anchor, (new_start, 0), &vp.wrapped, &vp.offsets);
                         }
                     } else {
                         // Auto-scroll down (towards newer content)
@@ -696,7 +783,7 @@ where
                             .saturating_sub(state.scroll_up as usize);
                         let bottom_row = new_start + vp.log_inner.height as usize;
                         if let Some(anchor) = mouse.anchor {
-                            update_selection(state, mouse, anchor, (bottom_row, usize::MAX), &vp.wrapped);
+                            update_selection(state, mouse, anchor, (bottom_row, usize::MAX), &vp.wrapped, &vp.offsets);
                         }
                     }
                 }
@@ -714,6 +801,7 @@ fn update_selection(
     anchor: (usize, usize),
     current: (usize, usize),
     wrapped: &[String],
+    offsets: &[usize],
 ) {
     // Clamp current col to line width
     let cur_row = current.0.min(wrapped.len().saturating_sub(1));
@@ -729,7 +817,17 @@ fn update_selection(
         ClickMode::Char => {
             // Both anchor and current positions should be included.
             // Use inclusive start + exclusive end, adjusting based on direction.
-            if (anchor.0, anchor.1) <= (cur_row, cur_col) {
+            if state.selection_rect {
+                // Rectangular selection stores ORIGINAL-line columns: the box's
+                // x-range must mean the same content position on every row.
+                let a_col = orig_col(wrapped, offsets, anchor.0, anchor.1);
+                let c_col = orig_col(wrapped, offsets, cur_row, cur_col);
+                if (anchor.0, a_col) <= (cur_row, c_col) {
+                    state.selection = Some((anchor.0, a_col, cur_row, c_col + 1));
+                } else {
+                    state.selection = Some((cur_row, c_col, anchor.0, a_col + 1));
+                }
+            } else if (anchor.0, anchor.1) <= (cur_row, cur_col) {
                 // Dragging right/down: anchor is start (inclusive), current is end (inclusive → +1)
                 state.selection = Some((anchor.0, anchor.1, cur_row, cur_col + 1));
             } else {
@@ -842,7 +940,13 @@ fn handle_mouse_event(
                 ClickMode::Char => {
                     mouse.anchor = Some((crow, ccol));
                     state.selection_rect = alt;
-                    state.selection = Some((crow, ccol, crow, ccol + 1));
+                    // Rectangular selection anchors in ORIGINAL-line columns.
+                    let col = if alt {
+                        orig_col(&vp.wrapped, &vp.offsets, crow, ccol)
+                    } else {
+                        ccol
+                    };
+                    state.selection = Some((crow, col, crow, col + 1));
                 }
                 ClickMode::Word => {
                     state.selection_rect = false;
@@ -892,7 +996,7 @@ fn handle_mouse_event(
                 let new_start = vp.total_wrapped.saturating_sub(inner.height as usize)
                     .saturating_sub(state.scroll_up as usize);
                 if let Some(anchor) = mouse.anchor {
-                    update_selection(state, mouse, anchor, (new_start, 0), &vp.wrapped);
+                    update_selection(state, mouse, anchor, (new_start, 0), &vp.wrapped, &vp.offsets);
                 }
                 mouse.auto_scroll = Some(true);
                 return;
@@ -905,7 +1009,7 @@ fn handle_mouse_event(
                     .saturating_sub(state.scroll_up as usize);
                 let bottom_row = new_start + inner.height as usize;
                 if let Some(anchor) = mouse.anchor {
-                    update_selection(state, mouse, anchor, (bottom_row, usize::MAX), &vp.wrapped);
+                    update_selection(state, mouse, anchor, (bottom_row, usize::MAX), &vp.wrapped, &vp.offsets);
                 }
                 mouse.auto_scroll = Some(false);
                 return;
@@ -917,7 +1021,7 @@ fn handle_mouse_event(
             let crow = content_row(m.row);
             let ccol = content_col(m.column);
             if let Some(anchor) = mouse.anchor {
-                update_selection(state, mouse, anchor, (crow, ccol), &vp.wrapped);
+                update_selection(state, mouse, anchor, (crow, ccol), &vp.wrapped, &vp.offsets);
             }
         }
 
@@ -933,7 +1037,7 @@ fn handle_mouse_event(
 
                 // Copy selection to clipboard
                 if let Some((sr, sc, er, ec)) = state.selection {
-                    let text = extract_selection(&vp.wrapped, sr, sc, er, ec, state.selection_rect);
+                    let text = extract_selection(&vp.wrapped, &vp.offsets, sr, sc, er, ec, state.selection_rect);
                     if !text.is_empty() {
                         osc52_copy(&text);
                     }
@@ -947,10 +1051,10 @@ fn handle_mouse_event(
                 let crow = content_row(m.row);
                 let ccol = content_col(m.column);
                 if let Some(anchor) = mouse.anchor {
-                    update_selection(state, mouse, anchor, (crow, ccol), &vp.wrapped);
+                    update_selection(state, mouse, anchor, (crow, ccol), &vp.wrapped, &vp.offsets);
                     // Copy on extend
                     if let Some((sr, sc, er, ec)) = state.selection {
-                        let text = extract_selection(&vp.wrapped, sr, sc, er, ec, state.selection_rect);
+                        let text = extract_selection(&vp.wrapped, &vp.offsets, sr, sc, er, ec, state.selection_rect);
                         if !text.is_empty() { osc52_copy(&text); }
                     }
                 }
@@ -1037,7 +1141,7 @@ mod tests {
 
         // Drag to col 2 (leftward)
         let wrapped = state.log_lines.clone();
-        update_selection(&mut state, &mut mouse, (0, 5), (0, 2), &wrapped);
+        update_selection(&mut state, &mut mouse, (0, 5), (0, 2), &wrapped, &[]);
 
         let (sr, sc, er, ec) = state.selection.unwrap();
         // After ordering: start should be (0, 2), end should be (0, 6)
@@ -1056,7 +1160,7 @@ mod tests {
         mouse.anchor = Some((0, 2));
 
         let wrapped = state.log_lines.clone();
-        update_selection(&mut state, &mut mouse, (0, 2), (0, 5), &wrapped);
+        update_selection(&mut state, &mut mouse, (0, 2), (0, 5), &wrapped, &[]);
 
         let (sr, sc, er, ec) = state.selection.unwrap();
         assert_eq!((sr, sc), (0, 2), "rightward: start should be at anchor");
@@ -1068,7 +1172,7 @@ mod tests {
         // Verify the extracted text includes both endpoints
         let wrapped = vec!["ABCDEFGH".to_string()];
         // Selection: cols 2..6 (CDEF)
-        let text = extract_selection(&wrapped, 0, 2, 0, 6, false);
+        let text = extract_selection(&wrapped, &[], 0, 2, 0, 6, false);
         assert_eq!(text, "CDEF", "should include both endpoints");
     }
 
@@ -1081,7 +1185,7 @@ mod tests {
         // "EFGH" is cols 2..6 on row 1. Extraction must NOT be shifted by the
         // indent and must yield "EFGH".
         let wrapped = vec!["ABCD".to_string(), "↪ EFGH".to_string()];
-        assert_eq!(extract_selection(&wrapped, 1, 2, 1, 6, false), "EFGH");
+        assert_eq!(extract_selection(&wrapped, &[0], 1, 2, 1, 6, false), "EFGH");
     }
 
     #[test]
@@ -1090,7 +1194,7 @@ mod tests {
         // Copying the whole line must reinsert the space consumed at the wrap.
         let wrapped = vec!["hello".to_string(), "↪ world".to_string()];
         let end = "↪ world".chars().count(); // display length of the last row
-        assert_eq!(extract_selection(&wrapped, 0, 0, 1, end, false), "hello world");
+        assert_eq!(extract_selection(&wrapped, &[0, 6], 0, 0, 1, end, false), "hello world");
     }
 
     #[test]
@@ -1099,7 +1203,7 @@ mod tests {
         let wrapped = vec!["he-llo".to_string(), "↪ world".to_string()];
         let end = "↪ world".chars().count();
         // cols 3..end on row 0, then all of the continuation → "llo world"
-        assert_eq!(extract_selection(&wrapped, 0, 3, 1, end, false), "llo world");
+        assert_eq!(extract_selection(&wrapped, &[0, 3], 0, 3, 1, end, false), "llo world");
     }
 
     #[test]
@@ -1114,9 +1218,9 @@ mod tests {
         mouse.selecting = true;
         mouse.click_mode = ClickMode::Char;
         mouse.anchor = Some((0, 2));
-        update_selection(&mut state, &mut mouse, (0, 2), (0, 4), &wrapped);
+        update_selection(&mut state, &mut mouse, (0, 2), (0, 4), &wrapped, &[0]);
         let (sr, sc, er, ec) = state.selection.unwrap();
-        assert_eq!(extract_selection(&wrapped, sr, sc, er, ec, false), "def");
+        assert_eq!(extract_selection(&wrapped, &[0], sr, sc, er, ec, false), "def");
     }
 
     #[test]
@@ -1129,9 +1233,9 @@ mod tests {
         mouse.selecting = true;
         mouse.click_mode = ClickMode::Line;
         mouse.anchor = Some((0, 0));
-        update_selection(&mut state, &mut mouse, (0, 0), (0, 4), &wrapped);
+        update_selection(&mut state, &mut mouse, (0, 0), (0, 4), &wrapped, &[0]);
         let (sr, sc, er, ec) = state.selection.unwrap();
-        assert_eq!(extract_selection(&wrapped, sr, sc, er, ec, false), "def");
+        assert_eq!(extract_selection(&wrapped, &[0], sr, sc, er, ec, false), "def");
     }
 
     fn click_vp() -> ViewportCache {
@@ -1141,6 +1245,7 @@ mod tests {
             viewport_start: 0,
             total_wrapped: 1,
             wrapped: vec!["hello".to_string()],
+            offsets: vec![0],
         }
     }
 
@@ -1179,6 +1284,148 @@ mod tests {
         assert!(!state.selection_rect, "plain click must not be rectangular");
     }
 
+    #[cfg(feature = "tui")]
+    #[test]
+    fn test_wrap_with_offsets_matches_textwrap() {
+        let cases = [
+            "short",
+            "the quick brown fox jumps over the lazy dog",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "hello   world  multiple   spaces",
+            "trailing spaces   ",
+            "  leading",
+            "",
+        ];
+        for &text in &cases {
+            for width in [3usize, 5, 8, 20] {
+                let opts = textwrap::Options::new(width)
+                    .subsequent_indent("↪ ")
+                    .break_words(true);
+                let expected: Vec<String> = textwrap::wrap(text, opts)
+                    .into_iter()
+                    .map(|c| c.into_owned())
+                    .collect();
+                let got: Vec<String> =
+                    wrap_with_offsets(text, width, "↪ ").into_iter().map(|(r, _)| r).collect();
+                assert_eq!(got, expected, "text={text:?} width={width}");
+            }
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn test_wrap_offsets_are_content_positions() {
+        // "hello world" at width 8: the break consumes the space at char 5,
+        // so the continuation row's content starts at char 6.
+        let rows = wrap_with_offsets("hello world", 8, "↪ ");
+        assert_eq!(rows[0], ("hello".to_string(), 0));
+        assert_eq!(rows[1], ("↪ world".to_string(), 6));
+
+        // Mid-word breaks (break_words) advance by the chunk size.
+        let rows = wrap_with_offsets("abcdef", 2, "");
+        assert_eq!(rows, vec![
+            ("ab".to_string(), 0),
+            ("cd".to_string(), 2),
+            ("ef".to_string(), 4),
+        ]);
+    }
+
+    /// Three logical lines wrapped at width 8:
+    ///   "hello world" → ["hello", "↪ world"]  offsets [0, 6]
+    ///   "short"       → ["short"]             offsets [0]
+    ///   "firmi xyz"   → ["firmi", "↪ xyz"]    offsets [0, 6]
+    fn rect_fixture() -> (Vec<String>, Vec<usize>) {
+        (
+            vec![
+                "hello".to_string(),
+                "↪ world".to_string(),
+                "short".to_string(),
+                "firmi".to_string(),
+                "↪ xyz".to_string(),
+            ],
+            vec![0, 6, 0, 0, 6],
+        )
+    }
+
+    #[test]
+    fn test_rect_extract_selects_by_original_column() {
+        // Box anchored at the START of a continuation (orig col 6) through
+        // col 11: only continuation rows reach those columns; the first rows
+        // ("hello", "short", "firmi" — all < 6 chars past 0... "hello" is 5,
+        // "firmi" is 5, "short" is 5) contribute blank lines (box shape).
+        let (wrapped, offsets) = rect_fixture();
+        let text = extract_selection(&wrapped, &offsets, 1, 6, 4, 11, true);
+        assert_eq!(text, "world\n\n\nxyz");
+    }
+
+    #[test]
+    fn test_rect_extract_mid_continuation_only_same_depth() {
+        // Columns inside the continuations' content: rows that don't reach the
+        // original column contribute blank lines; "↪ xyz" is partially in.
+        let (wrapped, offsets) = rect_fixture();
+        let text = extract_selection(&wrapped, &offsets, 0, 7, 4, 10, true);
+        assert_eq!(text, "\norl\n\n\nyz");
+    }
+
+    #[test]
+    fn test_rect_extract_unwrapped_rows_behaves_like_display_columns() {
+        // With no wrapping (offsets 0, no indent), content columns equal
+        // display columns — same result as a display-based rectangle.
+        let wrapped = vec!["abcde".to_string(), "fghij".to_string()];
+        let text = extract_selection(&wrapped, &[0, 0], 0, 1, 1, 4, true);
+        assert_eq!(text, "bcd\nghi");
+    }
+
+    #[test]
+    fn test_rect_drag_stores_original_columns() {
+        // Alt-drag from the first content char of row 1's continuation
+        // (display col 2 → orig col 6) to display col 4 on row 4 (orig 8).
+        let (wrapped, offsets) = rect_fixture();
+        let mut state = make_state(vec!["irrelevant"]);
+        let mut mouse = make_mouse_state();
+        mouse.selecting = true;
+        mouse.click_mode = ClickMode::Char;
+        state.selection_rect = true;
+        mouse.anchor = Some((1, 2));
+        update_selection(&mut state, &mut mouse, (1, 2), (4, 4), &wrapped, &offsets);
+        let (sr, sc, er, ec) = state.selection.unwrap();
+        assert_eq!((sr, sc, er, ec), (1, 6, 4, 9));
+        assert_eq!(
+            extract_selection(&wrapped, &offsets, sr, sc, er, ec, true),
+            "wor\n\n\nxyz"
+        );
+    }
+
+    #[test]
+    fn test_rect_render_highlights_by_original_column() {
+        use ratatui::widgets::WidgetRef;
+        let (wrapped, offsets) = rect_fixture();
+        let widget = LogWidget {
+            lines: wrapped,
+            selection: Some((1, 6, 4, 9)),
+            viewport_start: 0,
+            rect: true,
+            offsets,
+        };
+        let area = ratatui::layout::Rect::new(0, 0, 20, 5);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        widget.render_ref(area, &mut buf);
+        let rev = |x: u16, y: u16| {
+            buf.cell((x, y))
+                .unwrap()
+                .style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        };
+        // Row 1 "↪ world": orig 6..9 → display cols 2,3,4 highlighted only.
+        assert!(rev(2, 1) && rev(4, 1));
+        assert!(!rev(5, 1) && !rev(6, 1));
+        // Row 4 "↪ xyz": orig 6..9 covers all of "xyz" → cols 2,3,4.
+        assert!(rev(2, 4) && rev(4, 4));
+        // Rows that don't reach orig col 6 ("hello", "short", "firmi").
+        assert!(!rev(0, 0) && !rev(0, 2) && !rev(0, 3));
+    }
+
     // ── Bug 2 test: content fits within bordered area ─────────────
 
     #[test]
@@ -1209,6 +1456,7 @@ mod tests {
             viewport_start: 87, // 100 - 8 - 5
             total_wrapped: 100,
             wrapped: (0..100).map(|i| format!("line{i}")).collect(),
+            offsets: vec![0; 100],
         };
 
         let mut mouse = make_mouse_state();
@@ -1246,6 +1494,7 @@ mod tests {
             viewport_start: 87,
             total_wrapped: 100,
             wrapped: (0..100).map(|i| format!("line{i}")).collect(),
+            offsets: vec![0; 100],
         };
 
         let mut mouse = make_mouse_state();
@@ -1300,7 +1549,7 @@ mod tests {
             "Next line".to_string(),
         ];
         // Select from row 0 col 0 to row 2 end
-        let text = extract_selection(&wrapped, 0, 0, 2, 9, false);
+        let text = extract_selection(&wrapped, &[0, 12, 0], 0, 0, 2, 9, false);
         // Row 0 + continuation row 1 are the same original line: joined with the
         // space consumed at the wrap (no newline).
         // Row 2 is a new line → newline before it.
@@ -1310,7 +1559,7 @@ mod tests {
     #[test]
     fn test_extract_single_line() {
         let wrapped = vec!["Hello World".to_string()];
-        let text = extract_selection(&wrapped, 0, 0, 0, 11, false);
+        let text = extract_selection(&wrapped, &[0], 0, 0, 0, 11, false);
         assert_eq!(text, "Hello World");
     }
 
