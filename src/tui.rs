@@ -411,16 +411,18 @@ pub fn extract_selection(
 }
 
 /// A widget that renders pre-wrapped log lines with optional selection highlight.
-struct LogWidget {
-    lines: Vec<String>,
+///
+/// Public (with public fields) for the fuzz harnesses; not stable API.
+pub struct LogWidget {
+    pub lines: Vec<String>,
     /// Selection in content coordinates.
-    selection: Option<(usize, usize, usize, usize)>,
+    pub selection: Option<(usize, usize, usize, usize)>,
     /// Content row of the first visible line (viewport offset).
-    viewport_start: usize,
+    pub viewport_start: usize,
     /// Whether selection is rectangular.
-    rect: bool,
+    pub rect: bool,
     /// Per content row: char offset into its original line (content coords).
-    offsets: Vec<usize>,
+    pub offsets: Vec<usize>,
 }
 
 impl ratatui::widgets::WidgetRef for LogWidget {

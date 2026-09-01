@@ -1087,3 +1087,48 @@ pub fn run_mouse_case(c: &MouseCase) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// T5 — log rendering: adversarial selections and areas into a real buffer
+// ---------------------------------------------------------------------------
+
+#[derive(Arbitrary, Debug, Clone)]
+pub struct RenderCase {
+    pub lines: Vec<String>,
+    pub has_sel: bool,
+    pub sr: u8,
+    pub sc: u8,
+    pub er: u8,
+    pub ec: u8,
+    pub viewport_start: u8,
+    pub rect: bool,
+    pub area_x: u8,
+    pub area_y: u8,
+    pub area_w: u8,
+    pub area_h: u8,
+}
+
+/// Render pre-wrapped lines with an arbitrary (possibly stale or out-of-
+/// range) selection into a real ratatui buffer. Must never panic.
+pub fn run_render_case(c: &RenderCase) {
+    use ratatui::widgets::WidgetRef;
+
+    let lines: Vec<String> = c.lines.iter().enumerate().map(|(i, l)| sprout(l, i as u8)).collect();
+    let selection = c.has_sel.then(|| {
+        (c.sr as usize, c.sc as usize, c.er as usize, c.ec as usize)
+    });
+    let widget = servyi_servatui::tui::LogWidget {
+        lines,
+        selection,
+        viewport_start: c.viewport_start as usize,
+        rect: c.rect,
+    };
+    let area = ratatui::layout::Rect::new(
+        c.area_x as u16 % 80,
+        c.area_y as u16 % 40,
+        c.area_w as u16 % 80,
+        c.area_h as u16 % 40,
+    );
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    widget.render_ref(area, &mut buf);
+}

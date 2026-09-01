@@ -44,3 +44,9 @@ name = "mouse_selection"
 path = "fuzz_targets/mouse_selection.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "render"
+path = "fuzz_targets/render.rs"
+test = false
+doc = false
