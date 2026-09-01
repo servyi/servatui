@@ -29,6 +29,9 @@ tokio-test = "0.4"
 name = "echo"
 
 [[example]]
+name = "lorem"
+
+[[example]]
 name = "mouse-recorder"
 required-features = ["tui"]
 
