@@ -862,3 +862,228 @@ pub fn run_round_trip_case(c: &RoundTripCase) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// T4 — TUI mouse selection: realistic user event sequences
+// ---------------------------------------------------------------------------
+
+#[derive(Arbitrary, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FuzzButton {
+    Left,
+    Right,
+    Middle,
+}
+
+#[derive(Arbitrary, Debug, Clone)]
+pub enum FuzzEv {
+    Down { button: FuzzButton, col: u8, row: u8, ctrl: bool },
+    Up { button: FuzzButton, col: u8, row: u8 },
+    Drag { button: FuzzButton, col: u8, row: u8, ctrl: bool },
+    ScrollUp { col: u8, row: u8 },
+    ScrollDown { col: u8, row: u8 },
+    Moved { col: u8, row: u8 },
+    /// New output arrives while the user is interacting (realistic mid-drag).
+    AppendLine { salt: u8 },
+    /// Terminal resize (SIGWINCH), also realistic mid-drag.
+    Resize { w: u8, h: u8 },
+}
+
+#[derive(Arbitrary, Debug, Clone)]
+pub struct MouseCase {
+    pub lines: Vec<String>,
+    pub term_w: u8,
+    pub term_h: u8,
+    pub scroll0: u8,
+    pub events: Vec<FuzzEv>,
+}
+
+/// Rebuild the viewport cache the way a draw pass would: clamp scroll to the
+/// content height and recompute the viewport window (mirrors `tui_loop`).
+fn rebuild_viewport(state: &mut servyi_servatui::TuiState, w: u16, h: u16) -> servyi_servatui::tui::ViewportCache {
+    let log_area = ratatui::layout::Rect::new(0, 0, w, h.saturating_sub(3).max(4));
+    let log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+    let max_scroll = state.log_lines.len().saturating_sub(log_inner.height as usize);
+    state.scroll_up = (state.scroll_up as usize).min(max_scroll) as u16;
+    let viewport_start = max_scroll.saturating_sub(state.scroll_up as usize);
+    servyi_servatui::tui::ViewportCache {
+        log_area,
+        log_inner,
+        viewport_start,
+        total_wrapped: state.log_lines.len(),
+        wrapped: state.log_lines.clone(),
+    }
+}
+
+fn crossterm_event(
+    ev: &FuzzEv,
+    w: u16,
+    h: u16,
+) -> crossterm::event::MouseEvent {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let on_screen = |col: u8, row: u8| (col as u16 % w, row as u16 % h);
+    match ev {
+        FuzzEv::Down { button, col, row, ctrl } => {
+            let (column, row) = on_screen(*col, *row);
+            MouseEvent {
+                kind: MouseEventKind::Down(match button {
+                    FuzzButton::Left => MouseButton::Left,
+                    FuzzButton::Right => MouseButton::Right,
+                    FuzzButton::Middle => MouseButton::Middle,
+                }),
+                column,
+                row,
+                modifiers: if *ctrl { KeyModifiers::CONTROL } else { KeyModifiers::NONE },
+            }
+        }
+        FuzzEv::Up { button, col, row } => {
+            let (column, row) = on_screen(*col, *row);
+            MouseEvent {
+                kind: MouseEventKind::Up(match button {
+                    FuzzButton::Left => MouseButton::Left,
+                    FuzzButton::Right => MouseButton::Right,
+                    FuzzButton::Middle => MouseButton::Middle,
+                }),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }
+        }
+        FuzzEv::Drag { button, col, row, ctrl } => {
+            let (column, row) = on_screen(*col, *row);
+            MouseEvent {
+                kind: MouseEventKind::Drag(match button {
+                    FuzzButton::Left => MouseButton::Left,
+                    FuzzButton::Right => MouseButton::Right,
+                    FuzzButton::Middle => MouseButton::Middle,
+                }),
+                column,
+                row,
+                modifiers: if *ctrl { KeyModifiers::CONTROL } else { KeyModifiers::NONE },
+            }
+        }
+        FuzzEv::ScrollUp { col, row } => {
+            let (column, row) = on_screen(*col, *row);
+            MouseEvent { kind: MouseEventKind::ScrollUp, column, row, modifiers: KeyModifiers::NONE }
+        }
+        FuzzEv::ScrollDown { col, row } => {
+            let (column, row) = on_screen(*col, *row);
+            MouseEvent { kind: MouseEventKind::ScrollDown, column, row, modifiers: KeyModifiers::NONE }
+        }
+        FuzzEv::Moved { col, row } => {
+            let (column, row) = on_screen(*col, *row);
+            MouseEvent { kind: MouseEventKind::Moved, column, row, modifiers: KeyModifiers::NONE }
+        }
+        FuzzEv::AppendLine { .. } | FuzzEv::Resize { .. } => {
+            unreachable!("non-mouse events are handled by the runner")
+        }
+    }
+}
+
+/// Drive the TUI mouse state machine through a realistic event sequence and
+/// check behavioral invariants after every event.
+pub fn run_mouse_case(c: &MouseCase) {
+    use crossterm::event::MouseButton;
+    use servyi_servatui::tui as tui;
+
+    let mut w = 20 + c.term_w as u16 % 100; // 20..=119
+    let mut h = 8 + c.term_h as u16 % 42; // 8..=49
+
+    let mut state = servyi_servatui::TuiState::new();
+    state.log_lines = c
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| sprout(l, i as u8))
+        .collect();
+    if state.log_lines.is_empty() {
+        state.log_lines.push("seed line".into());
+    }
+    state.scroll_up = c.scroll0 as u16;
+
+    let mut vp = rebuild_viewport(&mut state, w, h);
+    let mut mouse = tui::MouseState::default();
+
+    for (i, ev) in c.events.iter().enumerate() {
+        match ev {
+            FuzzEv::AppendLine { salt } => {
+                // Mirrors tui_loop's Enter handling: append, reset scroll,
+                // clear selection (new output).
+                state.log_lines.push(format!("new {salt}"));
+                state.scroll_up = 0;
+                state.selection = None;
+                vp = rebuild_viewport(&mut state, w, h);
+            }
+            FuzzEv::Resize { w: nw, h: nh } => {
+                w = 20 + *nw as u16 % 100;
+                h = 8 + *nh as u16 % 42;
+                vp = rebuild_viewport(&mut state, w, h);
+            }
+            _ => {
+                let m = crossterm_event(ev, w, h);
+                let inner = vp.log_inner;
+                let area = vp.log_area;
+                let scrollbar_col = area.x + area.width - 1;
+                let on_scrollbar = m.column == scrollbar_col
+                    && m.row > area.y
+                    && m.row < area.y + area.height - 1;
+                let in_log = m.column >= inner.x
+                    && m.column < inner.x + inner.width
+                    && m.row >= inner.y
+                    && m.row < inner.y + inner.height;
+
+                let expected_scrollbar_press = if let crossterm::event::MouseEventKind::Down(MouseButton::Left) = m.kind {
+                    on_scrollbar.then(|| {
+                        let track_h = (area.height.saturating_sub(2)) as usize;
+                        let click_y = (m.row - area.y - 1) as usize;
+                        let max_scroll = vp.total_wrapped.saturating_sub(inner.height as usize);
+                        max_scroll.saturating_sub(click_y * max_scroll / track_h.max(1)) as u16
+                    })
+                } else {
+                    None
+                };
+
+                let selection_before = state.selection;
+                tui::handle_mouse_event(m, &mut state, &mut mouse, &vp);
+
+                if let Some(expected) = expected_scrollbar_press {
+                    assert_eq!(
+                        state.scroll_up, expected,
+                        "scrollbar press must jump to the clicked position"
+                    );
+                }
+                if let crossterm::event::MouseEventKind::Down(MouseButton::Left) = m.kind {
+                    if in_log && !on_scrollbar {
+                        let crow = vp.viewport_start + (m.row - inner.y) as usize;
+                        // All click modes anchor the selection on the
+                        // clicked row — except a word-mode click below the
+                        // content, which leaves the previous selection.
+                        if crow < vp.wrapped.len() {
+                            let (sr, _, er, _) = state
+                                .selection
+                                .unwrap_or_else(|| panic!("event {i}: click on content must open a selection"));
+                            assert_eq!(
+                                (sr, er), (crow, crow),
+                                "event {i}: click must anchor the selection on the clicked row"
+                            );
+                        }
+                    }
+                }
+                // NOTE: we deliberately do NOT assert that a drag with
+                // `selection_before == None` keeps the selection empty: a
+                // right-click outside the log clears the visible selection
+                // while the (still held) left-drag anchor persists, so a
+                // subsequent drag legitimately re-opens the selection.
+
+                if let Some((sr, sc, er, ec)) = state.selection {
+                    let text = tui::extract_selection(&vp.wrapped, sr, sc, er, ec, state.selection_rect);
+                    let total: usize = vp.wrapped.iter().map(|l| l.chars().count()).sum();
+                    assert!(
+                        text.chars().count() <= total + vp.wrapped.len(),
+                        "event {i}: extracted text larger than the whole content"
+                    );
+                }
+            }
+        }
+    }
+}

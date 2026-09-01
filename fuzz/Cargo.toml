@@ -15,6 +15,8 @@ servyi-servatui = { path = ".." }
 arbitrary = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+crossterm = "0.28"
+ratatui = "0.28"
 
 [lib]
 path = "src/lib.rs"
@@ -34,5 +36,11 @@ doc = false
 [[bin]]
 name = "round_trip"
 path = "fuzz_targets/round_trip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "mouse_selection"
+path = "fuzz_targets/mouse_selection.rs"
 test = false
 doc = false

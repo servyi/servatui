@@ -69,7 +69,11 @@ impl TuiState {
 enum ClickMode { Char, Word, Line }
 
 /// Tracks mouse interaction state across frames.
-struct MouseState {
+///
+/// Public for the fuzz harnesses (construct via [`MouseState::default`] and
+/// drive it with [`handle_mouse_event`]); the fields stay private.
+/// Not stable API.
+pub struct MouseState {
     selecting: bool,
     scrollbar_drag: bool,
     click_count: u32,
@@ -356,7 +360,7 @@ fn orig_col(wrapped: &[String], offsets: &[usize], row: usize, display_col: usiz
 /// copied text matches the original line. Continuation rows (same original
 /// line) are joined with a single space; different original lines are
 /// separated by a newline.
-fn extract_selection(
+pub fn extract_selection(
     wrapped: &[String],
     offsets: &[usize],
     sr: usize, sc: usize, er: usize, ec: usize,
@@ -531,14 +535,17 @@ where
 }
 
 /// Cached viewport info for mouse coordinate translation.
-struct ViewportCache {
-    log_area: ratatui::layout::Rect,
-    log_inner: ratatui::layout::Rect,
-    viewport_start: usize,
-    total_wrapped: usize,
-    wrapped: Vec<String>,
+/// Cached viewport info for mouse coordinate translation.
+///
+/// Public (with public fields) for the fuzz harnesses; not stable API.
+pub struct ViewportCache {
+    pub log_area: ratatui::layout::Rect,
+    pub log_inner: ratatui::layout::Rect,
+    pub viewport_start: usize,
+    pub total_wrapped: usize,
+    pub wrapped: Vec<String>,
     /// Per wrapped row: char offset into its original line (content coords).
-    offsets: Vec<usize>,
+    pub offsets: Vec<usize>,
 }
 
 #[cfg(feature = "tui")]
@@ -857,7 +864,10 @@ fn update_selection(
     }
 }
 
-fn handle_mouse_event(
+/// Process one mouse event against the TUI/selection state.
+///
+/// Public for the fuzz harnesses; not stable API.
+pub fn handle_mouse_event(
     m: crossterm::event::MouseEvent,
     state: &mut TuiState,
     mouse: &mut MouseState,
@@ -1527,6 +1537,56 @@ mod tests {
             scroll_before, state.scroll_up
         );
         assert!(state.selection.is_some(), "selection should be extended downward");
+    }
+
+    // ── Bug: scrollbar drag above track underflows ────────────────
+
+    #[test]
+    fn test_scrollbar_drag_above_track_does_not_underflow() {
+        // Press the scrollbar, then drag up along the scrollbar column past
+        // the top of the track (row == area.y, the top border). The drag's
+        // click_y computation (m.row - area.y - 1) must not underflow.
+        // Found by the mouse_selection fuzz target.
+        let mut state = make_state(vec!["line"; 100]);
+
+        let vp = ViewportCache {
+            log_area: ratatui::layout::Rect::new(0, 0, 80, 10),
+            log_inner: ratatui::layout::Rect::new(1, 1, 78, 8),
+            viewport_start: 92,
+            total_wrapped: 100,
+            wrapped: (0..100).map(|i| format!("line{i}")).collect(),
+            offsets: vec![0; 100],
+        };
+
+        let mut mouse = make_mouse_state();
+        let scrollbar_col = 79; // area.x + area.width - 1
+
+        // Press on the scrollbar track.
+        let press = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: scrollbar_col,
+            row: 5,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        handle_mouse_event(press, &mut state, &mut mouse, &vp);
+        assert!(mouse.scrollbar_drag, "press on scrollbar must start a scrollbar drag");
+
+        // Drag along the scrollbar column up to the top border row.
+        // Previously panicked: attempt to subtract with overflow.
+        let drag = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+            column: scrollbar_col,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        handle_mouse_event(drag, &mut state, &mut mouse, &vp);
+
+        // Dragging to the very top of the track shows the oldest content.
+        let max_scroll = vp.total_wrapped.saturating_sub(vp.log_inner.height as usize);
+        assert_eq!(
+            state.scroll_up as usize, max_scroll,
+            "dragging the scrollbar to the top must scroll to the oldest content"
+        );
     }
 
     // ── Word boundary tests ───────────────────────────────────────
