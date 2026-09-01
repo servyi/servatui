@@ -35,6 +35,19 @@ pub struct SocketConnection {
 
 impl SocketConnection {
     pub fn connect(path: &Path) -> Result<Self, String> {
+        if path.as_os_str().is_empty() {
+            // Linux maps this to EINVAL ("Invalid argument") because an empty
+            // sun_path is a zero-length abstract-socket name — opaque to users.
+            return Err(format!(
+                "socket path is empty (start a server with `{} serve <socket>`)",
+                std::env::args().next()
+                    .map(|a| std::path::Path::new(&a)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| a.clone()))
+                    .unwrap_or_else(|| "app".into())
+            ));
+        }
         let stream = UnixStream::connect(path).map_err(|e| e.to_string())?;
         let reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
         Ok(Self { stream, reader })
@@ -76,5 +89,27 @@ impl RawConnection for TestEndpoint {
     }
     fn recv_bytes(&mut self) -> Result<Vec<u8>, String> {
         self.incoming.lock().unwrap().pop_front().ok_or("no data".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_socket_path_gives_actionable_error() {
+        let err = match SocketConnection::connect(Path::new("")) {
+            Err(e) => e,
+            Ok(_) => panic!("empty path must never connect"),
+        };
+        assert!(
+            err.contains("socket path is empty"),
+            "expected actionable message, got: {err}"
+        );
+        assert!(
+            !err.contains("Invalid argument"),
+            "must not leak the raw EINVAL: {err}"
+        );
+        assert!(err.contains("serve"), "should point at the fix: {err}");
     }
 }
