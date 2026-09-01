@@ -993,7 +993,9 @@ pub fn handle_mouse_event(
             if mouse.scrollbar_drag {
                 if on_scrollbar || m.column == scrollbar_col {
                     let track_h = (area.height.saturating_sub(2)) as usize;
-                    let click_y = (m.row - area.y - 1) as usize;
+                    // Clamp at the top of the track: the drag may report a
+                    // row on (or above) the top border row.
+                    let click_y = m.row.saturating_sub(area.y + 1) as usize;
                     let max_scroll = vp.total_wrapped.saturating_sub(inner.height as usize);
                     state.scroll_up = max_scroll.saturating_sub(
                         click_y * max_scroll / track_h.max(1)
