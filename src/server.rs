@@ -59,9 +59,15 @@ impl ServerHandle {
         Ok(())
     }
 
-    fn handle_connection(
+    /// Handle a single connection: read the command name, dispatch to the
+    /// matching protocol, and run its server side to completion.
+    ///
+    /// Public (and generic over [`RawConnection`]) so embedders, integration
+    /// tests, and fuzz harnesses can drive a full conversation without a
+    /// real socket — e.g. over [`crate::connection::TestEndpoint`].
+    pub fn handle_connection(
         protocols: &[Protocol],
-        conn: &mut SocketConnection,
+        conn: &mut dyn RawConnection,
         ctx: &dyn Any,
     ) -> Result<(), String> {
         match conn.recv_bytes() {
@@ -81,10 +87,14 @@ impl ServerHandle {
     }
 }
 
-fn dispatch_protocol(
+/// Parse the command name from the first wire line and run the matching
+/// protocol's server side.
+///
+/// Public (and generic over [`RawConnection`]) as a testing/fuzzing seam.
+pub fn dispatch_protocol(
     protocols: &[Protocol],
     cmd_str: &str,
-    conn: &mut SocketConnection,
+    conn: &mut dyn RawConnection,
     ctx: &dyn Any,
 ) -> Result<(), String> {
     let cmd_name: String = serde_json::from_str(cmd_str)
