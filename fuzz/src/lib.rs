@@ -911,6 +911,9 @@ fn rebuild_viewport(state: &mut servyi_servatui::TuiState, w: u16, h: u16) -> se
         viewport_start,
         total_wrapped: state.log_lines.len(),
         wrapped: state.log_lines.clone(),
+        // Harness lines are unwrapped (each row is its own original line),
+        // so every row's offset into its original line is 0.
+        offsets: vec![0; state.log_lines.len()],
     }
 }
 
@@ -1076,7 +1079,7 @@ pub fn run_mouse_case(c: &MouseCase) {
                 // subsequent drag legitimately re-opens the selection.
 
                 if let Some((sr, sc, er, ec)) = state.selection {
-                    let text = tui::extract_selection(&vp.wrapped, sr, sc, er, ec, state.selection_rect);
+                    let text = tui::extract_selection(&vp.wrapped, &vp.offsets, sr, sc, er, ec, state.selection_rect);
                     let total: usize = vp.wrapped.iter().map(|l| l.chars().count()).sum();
                     assert!(
                         text.chars().count() <= total + vp.wrapped.len(),
@@ -1118,10 +1121,11 @@ pub fn run_render_case(c: &RenderCase) {
         (c.sr as usize, c.sc as usize, c.er as usize, c.ec as usize)
     });
     let widget = servyi_servatui::tui::LogWidget {
-        lines,
+        lines: lines.clone(),
         selection,
         viewport_start: c.viewport_start as usize,
         rect: c.rect,
+        offsets: vec![0; lines.len()],
     };
     let area = ratatui::layout::Rect::new(
         c.area_x as u16 % 80,

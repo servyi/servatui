@@ -1,6 +1,6 @@
 [package]
 name = "servyi-servatui"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 description = "Generic server-client framework with TUI/CLI frontends. Define protocols with type-safe builder chains."
