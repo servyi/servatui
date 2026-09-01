@@ -48,11 +48,9 @@ impl ServerHandle {
                             reader: std::io::BufReader::new(reader),
                         };
                         let ctx_any: &dyn Any = &*ctx;
-                        eprintln!("[trace] server: accepted connection");
                         if let Err(e) = Self::handle_connection(&protocols, &mut conn, ctx_any) {
                             eprintln!("Connection error: {e}");
                         }
-                        eprintln!("[trace] server: connection handler returned");
                     });
                 }
                 Err(e) => eprintln!("Accept error: {e}"),
@@ -66,26 +64,19 @@ impl ServerHandle {
         conn: &mut SocketConnection,
         ctx: &dyn Any,
     ) -> Result<(), String> {
-        eprintln!("[trace] handle_connection: calling recv_bytes...");
         match conn.recv_bytes() {
             Ok(raw) => {
-                eprintln!("[trace] handle_connection: recv got {} bytes", raw.len());
                 let trimmed = std::str::from_utf8(&raw).unwrap_or("").trim();
                 if trimmed.is_empty() {
-                    eprintln!("[trace] handle_connection: empty input, returning Ok");
                     return Ok(());
                 }
-                eprintln!("[trace] handle_connection: dispatching '{trimmed}'");
                 dispatch_protocol(protocols, trimmed, conn, ctx)
             }
             Err(e) if e.contains("connection closed") => {
-                eprintln!("[trace] handle_connection: client disconnected before sending data");
+                // Client disconnected before sending data — not an error.
                 Ok(())
             }
-            Err(e) => {
-                eprintln!("[trace] handle_connection: recv error: {e}");
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 }

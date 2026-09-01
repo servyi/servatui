@@ -255,8 +255,13 @@ impl<B: ratatui::backend::Backend> ratatui::backend::Backend for SizeOverrideBac
 }
 
 /// Copy text to clipboard via OSC 52 escape sequence.
+/// No-op when stdout is not a terminal (e.g. piped output, test harnesses).
 fn osc52_copy(text: &str) {
     use base64::{Engine, engine::general_purpose};
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
     let encoded = general_purpose::STANDARD.encode(text);
     let _ = write!(std::io::stdout(), "\x1b]52;c;{}\x1b\\", encoded);
     let _ = std::io::stdout().flush();
@@ -265,7 +270,12 @@ fn osc52_copy(text: &str) {
 /// Paste from clipboard via OSC 52 read request.
 /// The terminal responds with the clipboard content, which arrives as terminal
 /// input. This sends the request; the response needs to be handled separately.
+/// No-op when stdout is not a terminal.
 fn osc52_paste() {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
     let _ = write!(std::io::stdout(), "\x1b]52;c;?\x1b\\");
     let _ = std::io::stdout().flush();
 }
