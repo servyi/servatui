@@ -88,7 +88,9 @@ fn install_signal_thread() {
             // Process-lifetime: unregistered only when the process ends.
             let signals = Box::leak(Box::new(signals));
             std::thread::spawn(move || {
-                for sig in signals.forever() {
+                // Blocks until the first signal; the handler exits the
+                // process, so at most one iteration ever runs.
+                if let Some(sig) = signals.forever().next() {
                     restore_terminal();
                     std::process::exit(128 + sig);
                 }
