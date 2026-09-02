@@ -96,3 +96,34 @@ test replay code on exit.
 
 The test must fail against the current code first. If it passes, the test
 is wrong or the bug doesn't exist. Fix the test or investigate before proceeding.
+
+## Display Layers (`display/` crate)
+
+`servatui-display` is a window-manager layer stack built on the closure API
+(core stays untouched except for the non-breaking `run_tui_with_events`
+event hook). A `Display` owns `Vec<DisplayLayer>`; each layer has a unique
+continuous id mapped onto a color palette (≤8 terminal colors: all of them;
+≥16: the 8 darker shades).
+
+- **Frame** (`Display::frame`): sort by priority, collapse priorities to
+  adjacent integers, run `on_overlay` in order (later = on top), attribute
+  new widget names to the adding layer, paint a colored underlay behind
+  every owned widget (builtin layer excluded), append the bottom-row
+  taskbar (one colored cell per layer, click to activate).
+- **Routing** (`Display::route_event`): Shift+Tab is system-reserved
+  (carousel rotation: each press raises the bottom-most layer); presses
+  activate + grab the pointer (drags/release follow the grabber outside its
+  areas); other mouse events hit-test topmost-first; keys/resize/focus are
+  offered topmost-first with fall-through; everything passed falls through
+  to the builtin handling.
+
+**When changing routing or attribution logic:**
+1. Write the test in `display/tests/display.rs` BEFORE the fix (must fail)
+2. Commit "add failing test for bug X", then the fix
+3. `cargo test --workspace`, `cargo clippy --all-targets` (zero warnings)
+4. Re-run the `display` fuzz target (`fuzz/`, nightly): the invariants are
+   priorities-adjacent-after-collapse, one-taskbar-cell-per-layer, grab
+   cleared on Up, grab holder is a live layer
+
+**Examples** (`cargo run -p servatui-display --example …`): `popup`
+(clickable modal), `picker` (↑/↓/Enter/Esc list), `textbox` (modal input).

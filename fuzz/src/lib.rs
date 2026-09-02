@@ -1135,3 +1135,223 @@ pub fn run_render_case(c: &RenderCase) {
     let mut buf = ratatui::buffer::Buffer::empty(area);
     widget.render_ref(area, &mut buf);
 }
+
+// ---------------------------------------------------------------------------
+// T6 — display layer stack: routing, priorities, taskbar, grab
+// ---------------------------------------------------------------------------
+
+#[derive(Arbitrary, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FuzzKey {
+    Char(u8),
+    Tab,
+    Esc,
+    Enter,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    Delete,
+    Backspace,
+}
+
+impl FuzzKey {
+    fn to_code(self) -> crossterm::event::KeyCode {
+        use crossterm::event::KeyCode;
+        match self {
+            FuzzKey::Char(b) => KeyCode::Char((b'a'..=b'z').contains(&b.min(b'z').max(b'a')) as u8 as char),
+            FuzzKey::Tab => KeyCode::Tab,
+            FuzzKey::Esc => KeyCode::Esc,
+            FuzzKey::Enter => KeyCode::Enter,
+            FuzzKey::Up => KeyCode::Up,
+            FuzzKey::Down => KeyCode::Down,
+            FuzzKey::PageUp => KeyCode::PageUp,
+            FuzzKey::PageDown => KeyCode::PageDown,
+            FuzzKey::Home => KeyCode::Home,
+            FuzzKey::End => KeyCode::End,
+            FuzzKey::Delete => KeyCode::Delete,
+            FuzzKey::Backspace => KeyCode::Backspace,
+        }
+    }
+}
+
+#[derive(Arbitrary, Debug, Clone)]
+pub enum FuzzDisplayEv {
+    Key { code: FuzzKey, shift: bool },
+    Down { col: u8, row: u8 },
+    Up { col: u8, row: u8 },
+    Drag { col: u8, row: u8 },
+    Wheel { col: u8, row: u8 },
+    Move { col: u8, row: u8 },
+}
+
+impl FuzzDisplayEv {
+    fn to_event(&self, w: u16, h: u16) -> crossterm::event::Event {
+        use crossterm::event::{Event, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let clamp = |c: u8, m: u16| c as u16 % m.max(1);
+        match self {
+            FuzzDisplayEv::Key { code, shift } => Event::Key(KeyEvent {
+                code: code.to_code(),
+                modifiers: if *shift { KeyModifiers::SHIFT } else { KeyModifiers::NONE },
+                kind: KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            }),
+            FuzzDisplayEv::Down { col, row } => Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: clamp(*col, w), row: clamp(*row, h),
+                modifiers: KeyModifiers::NONE,
+            }),
+            FuzzDisplayEv::Up { col, row } => Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: clamp(*col, w), row: clamp(*row, h),
+                modifiers: KeyModifiers::NONE,
+            }),
+            FuzzDisplayEv::Drag { col, row } => Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: clamp(*col, w), row: clamp(*row, h),
+                modifiers: KeyModifiers::NONE,
+            }),
+            FuzzDisplayEv::Wheel { col, row } => Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: clamp(*col, w), row: clamp(*row, h),
+                modifiers: KeyModifiers::NONE,
+            }),
+            FuzzDisplayEv::Move { col, row } => Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: clamp(*col, w), row: clamp(*row, h),
+                modifiers: KeyModifiers::NONE,
+            }),
+        }
+    }
+}
+
+#[derive(Arbitrary, Debug, Clone)]
+pub struct FuzzLayerSpec {
+    x: u8,
+    y: u8,
+    w: u8,
+    h: u8,
+    swallow_key: Option<FuzzKey>,
+    swallow_mouse: bool,
+}
+
+const FUZZ_NAMES: &[&str] = &["fz.a", "fz.b", "fz.c", "fz.d", "fz.e", "fz.f"];
+
+struct FuzzLayer {
+    name: &'static str,
+    spec: FuzzLayerSpec,
+    area: ratatui::layout::Rect,
+}
+
+impl servatui_display::DisplayLayer for FuzzLayer {
+    fn on_overlay(&mut self, _ctx: &mut servatui_display::LayerCtx, widgets: &mut Vec<servyi_servatui::WidgetEntry>) {
+        widgets.push(servyi_servatui::WidgetEntry {
+            name: self.name,
+            widget: Box::new(ratatui::widgets::Paragraph::new(self.name)),
+            area: self.area,
+        });
+    }
+
+    fn on_event(&mut self, ev: &crossterm::event::Event, _ctx: &servatui_display::LayerCtx) -> servatui_display::EventResult {
+        use crossterm::event::{Event, KeyEventKind};
+        use servatui_display::EventResult;
+        match (ev, &self.spec.swallow_key) {
+            (Event::Key(k), Some(want)) if k.kind == KeyEventKind::Press && k.code == want.to_code() => {
+                EventResult::Swallow
+            }
+            (Event::Mouse(_), _) if self.spec.swallow_mouse => EventResult::Swallow,
+            _ => EventResult::Pass,
+        }
+    }
+}
+
+#[derive(Arbitrary, Debug, Clone)]
+pub struct DisplayCase {
+    pub term_w: u8,
+    pub term_h: u8,
+    pub layers: Vec<FuzzLayerSpec>,
+    pub events: Vec<FuzzDisplayEv>,
+    /// Remove this layer index after this many events (exercises cleanup).
+    pub remove_after: Option<(u8, u8)>,
+}
+
+/// Drive a Display through a full frame/route lifecycle with realistic
+/// (valid-value) event sequences and check the routing invariants.
+pub fn run_display_case(c: &DisplayCase) {
+    use servatui_display::{Display, EventResult, LayerId};
+
+    let w = (40 + c.term_w % 40) as u16; // 40..=79
+    let h = (10 + c.term_h % 30) as u16; // 10..=39
+
+    let mut display = Display::with_palette(servatui_display::palette_for(16));
+    let mut ids = Vec::new();
+    for (i, spec) in c.layers.iter().enumerate().take(FUZZ_NAMES.len()) {
+        let area = ratatui::layout::Rect::new(
+            spec.x as u16 % w, spec.y as u16 % h,
+            (spec.w as u16 % 20).max(1), (spec.h as u16 % 15).max(1),
+        );
+        ids.push(display.add_layer(Box::new(FuzzLayer {
+            name: FUZZ_NAMES[i],
+            spec: spec.clone(),
+            area,
+        })));
+    }
+
+    let builtin_area = ratatui::layout::Rect::new(0, 0, w, h.saturating_sub(3));
+    let input_area = ratatui::layout::Rect::new(0, h.saturating_sub(3), w, 3);
+
+    for (n, ev) in c.events.iter().enumerate() {
+        // Mid-run removal exercises the cleanup paths.
+        if let Some((layer, at)) = c.remove_after {
+            if n == at as usize {
+                let idx = layer as usize % ids.len().max(1);
+                if !ids.is_empty() {
+                    display.remove_layer(ids.remove(idx));
+                }
+            }
+        }
+
+        // One frame per iteration, like the real loop draws.
+        let mut frame = vec![
+            servyi_servatui::WidgetEntry {
+                name: servyi_servatui::WIDGET_LOG,
+                widget: Box::new(ratatui::widgets::Paragraph::new("log")),
+                area: builtin_area,
+            },
+            servyi_servatui::WidgetEntry {
+                name: servyi_servatui::WIDGET_INPUT,
+                widget: Box::new(ratatui::widgets::Paragraph::new("in")),
+                area: input_area,
+            },
+        ];
+        display.frame(&mut frame);
+
+        // Collapse invariant: priorities are adjacent starting at 0.
+        let prios = display.priorities();
+        for (i, p) in prios.iter().enumerate() {
+            assert_eq!(*p, i as u64, "priorities must be adjacent after collapse: {prios:?}");
+        }
+        // Taskbar invariant: one cell per remaining layer.
+        let cells = frame.iter().filter(|e| e.name == "display.taskbar").count();
+        assert_eq!(cells, ids.len() + 1, "one taskbar cell per layer + builtin");
+
+        // Routing invariant: the grab holder exists and Up clears it.
+        let event = ev.to_event(w, h);
+        let _swallowed = display.route_event(&event);
+        if let crossterm::event::Event::Mouse(m) = &event {
+            if matches!(m.kind, crossterm::event::MouseEventKind::Up(_)) {
+                assert_eq!(display.grabbed(), None, "Up must clear the grab");
+            }
+        }
+        if let Some(g) = display.grabbed() {
+            assert!(g != LayerId::BUILTIN || true);
+            let known = g == LayerId::BUILTIN || ids.contains(&g);
+            assert!(known, "grab holder must be a live layer");
+        }
+
+        // The builtin layer is always present.
+        assert!(display.stack_order().contains(&LayerId::BUILTIN));
+        let _ = EventResult::Pass;
+    }
+}

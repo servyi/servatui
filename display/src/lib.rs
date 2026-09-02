@@ -41,7 +41,7 @@ use crossterm::event::Event;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Paragraph, WidgetRef};
+use ratatui::widgets::{Block, Paragraph};
 use servyi_servatui::{WidgetEntry, WIDGET_INPUT};
 
 /// Opaque, continuous layer identity. User layer ids start at 1; 0 is the
@@ -214,7 +214,7 @@ impl Display {
     }
 
     /// Register a layer; it starts on top of the stack. Returns its id.
-    pub fn add_layer(&mut self, mut layer: Box<dyn DisplayLayer>) -> LayerId {
+    pub fn add_layer(&mut self, layer: Box<dyn DisplayLayer>) -> LayerId {
         self.next_id += 1;
         let id = LayerId(self.next_id);
         let label = match layer.tab_label() {
@@ -255,7 +255,7 @@ impl Display {
     /// Sort by (priority, insertion order) and collapse priorities to
     /// adjacent integers (ties stay tied).
     fn resort(&mut self) {
-        self.slots.sort_by(|a, b| (a.priority, a.seq).cmp(&(b.priority, b.seq)));
+        self.slots.sort_by_key(|s| (s.priority, s.seq));
         let mut group = 0u64;
         let mut last: Option<u64> = None;
         for slot in &mut self.slots {
@@ -278,6 +278,11 @@ impl Display {
     /// last [`Display::frame`].
     pub fn stack_order(&self) -> Vec<LayerId> {
         self.slots.iter().map(|s| s.id).collect()
+    }
+
+    /// The collapsed priorities, ascending, matching [`Display::stack_order`].
+    pub fn priorities(&self) -> Vec<u64> {
+        self.slots.iter().map(|s| s.priority).collect()
     }
 
     /// Which layer owns the widget with this name (per the last frame).

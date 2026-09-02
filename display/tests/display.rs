@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Paragraph, WidgetRef};
+use ratatui::widgets::Paragraph;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use servatui_display::{detect_color_count, palette_for, Display, DisplayLayer, EventResult, LayerCtx, LayerId};
