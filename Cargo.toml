@@ -32,6 +32,10 @@ name = "echo"
 name = "lorem"
 
 [[example]]
+name = "panic-smoke"
+required-features = ["tui"]
+
+[[example]]
 name = "mouse-recorder"
 required-features = ["tui"]
 
