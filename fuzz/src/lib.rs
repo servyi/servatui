@@ -1046,7 +1046,6 @@ pub fn run_mouse_case(c: &MouseCase) {
                     None
                 };
 
-                let selection_before = state.selection;
                 tui::handle_mouse_event(m, &mut state, &mut mouse, &vp);
 
                 if let Some(expected) = expected_scrollbar_press {
@@ -1072,11 +1071,11 @@ pub fn run_mouse_case(c: &MouseCase) {
                         }
                     }
                 }
-                // NOTE: we deliberately do NOT assert that a drag with
-                // `selection_before == None` keeps the selection empty: a
-                // right-click outside the log clears the visible selection
-                // while the (still held) left-drag anchor persists, so a
-                // subsequent drag legitimately re-opens the selection.
+                // NOTE: we deliberately do NOT assert that a drag started
+                // with no selection keeps the selection empty: a right-click
+                // outside the log clears the visible selection while the
+                // (still held) left-drag anchor persists, so a subsequent
+                // drag legitimately re-opens the selection.
 
                 if let Some((sr, sc, er, ec)) = state.selection {
                     let text = tui::extract_selection(&vp.wrapped, &vp.offsets, sr, sc, er, ec, state.selection_rect);
