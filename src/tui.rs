@@ -502,10 +502,32 @@ pub fn run_tui(socket: &Path, protocols: &[Protocol]) -> Result<(), String> {
 pub fn run_tui_with_overlay<F>(
     socket: &Path,
     protocols: &[Protocol],
-    mut on_overlay: F,
+    on_overlay: F,
 ) -> Result<(), String>
 where
     F: FnMut(&mut Vec<WidgetEntry>),
+{
+    run_tui_with_events(socket, protocols, on_overlay, |_| false)
+}
+
+/// Run the TUI client with an overlay callback and an event hook.
+///
+/// The event hook is consulted for every terminal event BEFORE the builtin
+/// handling (input line, log selection, scrollbar). Returning `true`
+/// swallows the event: the builtin handling is skipped entirely. This is
+/// the integration point for event-routing layers on top of servatui
+/// (see the `servatui-display` crate); unhandled events fall through so a
+/// plain embedder behaves exactly like [`run_tui_with_overlay`].
+#[cfg(feature = "tui")]
+pub fn run_tui_with_events<F, G>(
+    socket: &Path,
+    protocols: &[Protocol],
+    mut on_overlay: F,
+    mut on_event: G,
+) -> Result<(), String>
+where
+    F: FnMut(&mut Vec<WidgetEntry>),
+    G: FnMut(&crossterm::event::Event) -> bool,
 {
     use crossterm::execute;
     use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
@@ -530,7 +552,9 @@ where
 
     let result = tui_loop(
         &mut terminal, &mut state, &mut input,
-        socket, protocols, &mut on_overlay, &mut mouse,
+        socket, protocols,
+        &mut TuiHooks { on_overlay: &mut on_overlay, on_event: &mut on_event },
+        &mut mouse,
     );
 
     // The guard's Drop also restores (idempotent) — this explicit call
@@ -540,7 +564,6 @@ where
     result
 }
 
-/// Cached viewport info for mouse coordinate translation.
 /// Cached viewport info for mouse coordinate translation.
 ///
 /// Public (with public fields) for the fuzz harnesses; not stable API.
@@ -554,6 +577,13 @@ pub struct ViewportCache {
     pub offsets: Vec<usize>,
 }
 
+/// The two embedder hooks `tui_loop` consults: the per-frame overlay
+/// callback and the per-event swallow callback.
+struct TuiHooks<'a> {
+    on_overlay: &'a mut dyn FnMut(&mut Vec<WidgetEntry>),
+    on_event: &'a mut dyn FnMut(&crossterm::event::Event) -> bool,
+}
+
 #[cfg(feature = "tui")]
 fn tui_loop<B>(
     terminal: &mut ratatui::Terminal<B>,
@@ -561,7 +591,7 @@ fn tui_loop<B>(
     input: &mut tui_input::Input,
     socket: &Path,
     protocols: &[Protocol],
-    on_overlay: &mut dyn FnMut(&mut Vec<WidgetEntry>),
+    hooks: &mut TuiHooks<'_>,
     mouse: &mut MouseState,
 ) -> Result<(), String>
 where
@@ -675,7 +705,7 @@ where
                 area: input_area,
             });
 
-            on_overlay(&mut widgets);
+            (hooks.on_overlay)(&mut widgets);
 
             for entry in &widgets {
                 entry.widget.render_ref(entry.area, f.buffer_mut());
@@ -704,6 +734,11 @@ where
 
         if event::poll(Duration::from_millis(poll_ms)).map_err(|e| e.to_string())? {
             let ev = event::read().map_err(|e| e.to_string())?;
+
+            // Event hook: swallowing an event skips the builtin handling.
+            if (hooks.on_event)(&ev) {
+                continue;
+            }
 
             match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {

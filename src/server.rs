@@ -205,6 +205,18 @@ impl App {
         crate::tui::run_tui_with_overlay(&self.socket, &self.protocols, on_overlay)
     }
 
+    /// Run the TUI client with an overlay callback and an event hook.
+    /// The event hook is consulted before the builtin handling; returning
+    /// `true` swallows the event. See [`crate::tui::run_tui_with_events`].
+    #[cfg(feature = "tui")]
+    pub fn run_tui_with_events<F, G>(&self, on_overlay: F, on_event: G) -> Result<(), String>
+    where
+        F: FnMut(&mut Vec<crate::tui::WidgetEntry>) + 'static,
+        G: FnMut(&crossterm::event::Event) -> bool + 'static,
+    {
+        crate::tui::run_tui_with_events(&self.socket, &self.protocols, on_overlay, on_event)
+    }
+
     /// Check if server is running.
     pub fn server_running(&self) -> bool {
         SocketConnection::server_exists(&self.socket)
