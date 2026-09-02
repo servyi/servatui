@@ -203,6 +203,7 @@ where
             name: self.name, help: self.help,
             parse: self.parse, steps: self.steps,
             offline: None,
+            completer: None,
         }
     }
 }
@@ -261,6 +262,7 @@ where
             name: self.name, help: self.help,
             parse: self.parse, steps: self.steps,
             offline: None,
+            completer: None,
         }
     }
 }
@@ -268,6 +270,15 @@ where
 // ═══════════════════════════════════════════════════════════════
 // Protocol — complete
 // ═══════════════════════════════════════════════════════════════
+
+/// Tab-completion function for the TUI input shell.
+///
+/// Receives the **confirmed** part of the current input line (never the
+/// flashing, unconfirmed suggestion tail) and returns full-line suggestions.
+/// The builtin command-name completion covers the first word; a completer
+/// registered here is consulted once the command word is complete (i.e. the
+/// input contains whitespace) and typically completes arguments.
+pub type Completer = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
 
 pub struct Protocol {
     pub name: &'static str,
@@ -279,9 +290,24 @@ pub struct Protocol {
     /// client version) without a running server. If `None`, the connect error
     /// propagates as before.
     pub offline: Option<OfflineFn>,
+    /// Optional tab-completion for argument positions (see [`Completer`]).
+    pub(crate) completer: Option<Completer>,
 }
 
 impl Protocol {
+    /// Register a tab-completion function.
+    ///
+    /// The function receives the whole **confirmed** input string (command
+    /// name included) and returns full-line suggestions; the TUI shows them
+    /// as an unconfirmed, flashing tail that Tab cycles through.
+    pub fn complete<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&str) -> Vec<String> + Send + Sync + 'static,
+    {
+        self.completer = Some(Arc::new(f));
+        self
+    }
+
     /// Register a fallback invoked when the server is unreachable.
     ///
     /// `execute_command` (TUI) and `run_cli_command` (CLI) catch a socket

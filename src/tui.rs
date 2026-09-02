@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use crate::console::Console;
 use crate::connection::{SocketConnection, TypedConnection};
 use crate::protocol::Protocol;
+use tui_input::Input;
 
 /// Name constants for servatui's built-in widgets.
 pub const WIDGET_LOG: &str = "servatui.log";
@@ -512,7 +513,6 @@ where
     };
     use crossterm::event::{EnableMouseCapture, DisableMouseCapture};
     use ratatui::{backend::CrosstermBackend, Terminal};
-    use tui_input::Input;
 
     enable_raw_mode().map_err(|e| e.to_string())?;
     execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture).map_err(|e| e.to_string())?;
@@ -571,8 +571,16 @@ where
     use tui_input::backend::crossterm::EventHandler;
 
     let mut vp: Option<ViewportCache> = None;
+    let mut completion = CompletionState::default();
+    let mut blink_on = true;
+    let mut last_blink = Instant::now();
 
     loop {
+        // Slow flash of the unconfirmed suggestion tail (~600ms phase).
+        if last_blink.elapsed() >= Duration::from_millis(600) {
+            last_blink = Instant::now();
+            blink_on = !blink_on;
+        }
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -638,10 +646,26 @@ where
 
             let prompt = "> ";
             let input_area = chunks[1];
+            let (confirmed_part, ghost) = split_confirmed(input.value(), completion.confirmed);
+            let input_line = if ghost.is_empty() {
+                ratatui::text::Line::from(format!("{prompt}{confirmed_part}"))
+            } else {
+                // The unconfirmed tail flashes: alternating between hidden and
+                // emphasized, toggled by the blink driver above.
+                let ghost_style = if blink_on {
+                    ratatui::style::Style::new().add_modifier(ratatui::style::Modifier::HIDDEN)
+                } else {
+                    ratatui::style::Style::new().add_modifier(ratatui::style::Modifier::REVERSED)
+                };
+                ratatui::text::Line::from(vec![
+                    ratatui::text::Span::raw(format!("{prompt}{confirmed_part}")),
+                    ratatui::text::Span::styled(ghost.to_string(), ghost_style),
+                ])
+            };
             widgets.push(WidgetEntry {
                 name: WIDGET_INPUT,
                 widget: Box::new(
-                    Paragraph::new(format!("{prompt}{}", input.value()))
+                    Paragraph::new(input_line)
                         .block(Block::default().borders(Borders::ALL).title("Input")),
                 ),
                 area: input_area,
@@ -679,6 +703,13 @@ where
 
             match ev {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Any key other than Tab confirms the whole input line
+                    // (including a flashing, unconfirmed suggestion tail).
+                    // Esc is the other exception: it DELETES the tail instead
+                    // of confirming it, so it must not pass the gate first.
+                    if key.code != KeyCode::Tab && key.code != KeyCode::Esc {
+                        confirm_all(input, &mut completion);
+                    }
                     match key.code {
                         KeyCode::PageUp => { state.scroll_up = state.scroll_up.saturating_add(5); continue; }
                         KeyCode::PageDown => { state.scroll_up = state.scroll_up.saturating_sub(5); continue; }
@@ -694,20 +725,22 @@ where
                             return Ok(());
                         }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            input.reset(); state.history_idx = None; continue;
+                            input.reset(); state.history_idx = None;
+                            confirm_all(input, &mut completion);
+                            continue;
+                        }
+                        KeyCode::Esc => {
+                            esc_unconfirmed(input, &mut completion);
+                            continue;
                         }
                         KeyCode::Tab => {
-                            let word = input.value().split_whitespace().next().unwrap_or("");
-                            if !word.is_empty() && !input.value().contains(' ') {
-                                if let Some(p) = protocols.iter().find(|p| p.name.starts_with(word)) {
-                                    *input = tui_input::Input::new(p.name.into());
-                                }
-                            }
+                            tab_complete(input, &mut completion, protocols);
                             continue;
                         }
                         KeyCode::Enter => {
                             let line = input.value().to_string();
                             input.reset();
+                            confirm_all(input, &mut completion);
                             state.history_idx = None;
                             let trimmed = line.trim();
                             if trimmed.is_empty() { continue; }
@@ -754,6 +787,7 @@ where
                                     None => state.history.len() - 1,
                                 });
                                 *input = tui_input::Input::new(state.history[state.history_idx.unwrap()].clone());
+                                confirm_all(input, &mut completion);
                             }
                         }
                         KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -762,11 +796,17 @@ where
                                     let new_idx = i + 1;
                                     state.history_idx = Some(new_idx);
                                     *input = tui_input::Input::new(state.history[new_idx].clone());
+                                    confirm_all(input, &mut completion);
                                 }
                                 _ => { state.history_idx = None; input.reset(); }
                             }
                         }
-                        _ => { let _ = input.handle_event(&Event::Key(key)); }
+                        _ => {
+                            let _ = input.handle_event(&Event::Key(key));
+                            // The just-inserted edit is confirmed too: the
+                            // boundary must never lag the last typed char.
+                            confirm_all(input, &mut completion);
+                        }
                     }
                 }
                 Event::Mouse(m) => {
@@ -809,6 +849,80 @@ where
             }
         }
     }
+}
+
+/// Input-shell completion state: the input line is split into a CONFIRMED
+/// prefix and an unconfirmed tail (e.g. a tab-completion suggestion).
+/// Everything past `confirmed` flashes; ESC deletes it; any key other than
+/// Tab confirms it; Tab cycles suggestions without confirming them.
+#[derive(Default)]
+pub(crate) struct CompletionState {
+    /// Number of CHARS of `input` that are confirmed.
+    pub confirmed: usize,
+    /// Index of the currently shown suggestion (None = none shown yet).
+    pub index: Option<usize>,
+}
+
+/// Split `value` at the `confirmed`-th char (char-boundary safe).
+fn split_confirmed(value: &str, confirmed: usize) -> (&str, &str) {
+    let byte = value
+        .char_indices()
+        .nth(confirmed)
+        .map(|(b, _)| b)
+        .unwrap_or(value.len());
+    value.split_at(byte)
+}
+
+/// Confirm the whole input line (any key except Tab does this first).
+fn confirm_all(input: &mut Input, comp: &mut CompletionState) {
+    comp.confirmed = input.value().chars().count();
+    comp.index = None;
+}
+
+/// ESC: delete the unconfirmed tail, reset the suggestion cycle.
+fn esc_unconfirmed(input: &mut Input, comp: &mut CompletionState) {
+    let confirmed: String = input.value().chars().take(comp.confirmed).collect();
+    *input = Input::new(confirmed);
+    comp.confirmed = input.value().chars().count();
+    comp.index = None;
+}
+
+/// Suggestions for the confirmed string: command names while the first word
+/// is still being typed; the plugin's completer once arguments have started.
+fn suggestions_for(protocols: &[Protocol], confirmed: &str) -> Vec<String> {
+    let first = confirmed.split_whitespace().next().unwrap_or("");
+    if confirmed.chars().any(char::is_whitespace) {
+        protocols
+            .iter()
+            .find(|p| p.name == first)
+            .and_then(|p| p.completer.as_ref())
+            .map(|c| c(confirmed))
+            .unwrap_or_default()
+    } else if first.is_empty() {
+        Vec::new()
+    } else {
+        protocols
+            .iter()
+            .filter(|p| p.name.starts_with(first))
+            .map(|p| p.name.to_string())
+            .collect()
+    }
+}
+
+/// Tab: apply the next suggestion as an UNCONFIRMED tail (flashing).
+/// The completer only ever sees the confirmed string, so repeated Tabs cycle
+/// through suggestions computed from the same base.
+fn tab_complete(input: &mut Input, comp: &mut CompletionState, protocols: &[Protocol]) {
+    let confirmed: String = input.value().chars().take(comp.confirmed).collect();
+    let options = suggestions_for(protocols, &confirmed);
+    let n = options.len();
+    if n == 0 {
+        return;
+    }
+    let idx = comp.index.map(|i| (i + 1) % n).unwrap_or(0);
+    comp.index = Some(idx);
+    let suggestion = options[idx].clone();
+    *input = Input::new(suggestion).with_cursor(comp.confirmed);
 }
 
 /// Update selection based on anchor + current position.
@@ -1139,6 +1253,132 @@ impl Console for TuiBufferConsole {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn completion_protocol(name: &'static str) -> Protocol {
+        crate::Plugin::new(name, "test cmd")
+            .parse(|_: &str| Ok(()))
+            .client(|_: (), _: &mut dyn crate::Console, _: &mut dyn crate::InputSource| Ok(()))
+            .server(|_: ()| Ok(()))
+            .client(|_: (), _: &mut dyn crate::Console, _: &mut dyn crate::InputSource| Ok(()))
+            .finalize(|| Ok(crate::ShellAction::Continue))
+    }
+
+    // ── tab completion: ghost + confirm model ─────────────────────
+
+    #[test]
+    fn tab_completes_command_names_as_ghost() {
+        let protocols = [completion_protocol("lorem"), completion_protocol("status")];
+        let mut input = tui_input::Input::new("lo".into());
+        let mut comp = CompletionState { confirmed: 2, ..Default::default() };
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "lorem");
+        assert_eq!(comp.confirmed, 2, "a suggestion must NOT be confirmed");
+        assert_eq!(input.cursor(), 2, "cursor stays at the confirmed boundary");
+    }
+
+    #[test]
+    fn tab_cycles_through_suggestions() {
+        let protocols = [
+            completion_protocol("lorem"),
+            completion_protocol("logout"),
+            completion_protocol("low"),
+        ];
+        let mut input = tui_input::Input::new("lo".into());
+        let mut comp = CompletionState { confirmed: 2, ..Default::default() };
+        for expected in ["lorem", "logout", "low", "lorem"] {
+            tab_complete(&mut input, &mut comp, &protocols);
+            assert_eq!(input.value(), expected);
+            assert_eq!(comp.confirmed, 2);
+        }
+    }
+
+    #[test]
+    fn plugin_completer_receives_confirmed_string_only() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_c = seen.clone();
+        let protocols = [completion_protocol("lorem").complete(move |s: &str| {
+            seen_c.lock().unwrap().push(s.to_string());
+            vec![format!("{s}alpha"), format!("{s}beta")]
+        })];
+        let mut input = tui_input::Input::new("lorem a".into());
+        let mut comp = CompletionState { confirmed: 7, ..Default::default() };
+
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "lorem aalpha", "first suggestion applied");
+        assert_eq!(comp.confirmed, 7, "applied suggestion stays unconfirmed");
+
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "lorem abeta", "second suggestion cycled in");
+        // The completer must have seen the CONFIRMED string both times —
+        // never the ghost text from the first suggestion.
+        assert_eq!(*seen.lock().unwrap(), vec!["lorem a", "lorem a"]);
+    }
+
+    #[test]
+    fn esc_trims_to_confirmed() {
+        let protocols = [completion_protocol("lorem").complete(|s: &str| vec![format!("{s}xyz")])];
+        let mut input = tui_input::Input::new("lorem a".into());
+        let mut comp = CompletionState { confirmed: 7, ..Default::default() };
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "lorem axyz");
+
+        esc_unconfirmed(&mut input, &mut comp);
+        assert_eq!(input.value(), "lorem a", "ESC deletes the unconfirmed part");
+        assert_eq!(comp.confirmed, 7);
+        assert_eq!(comp.index, None, "cycle resets after ESC");
+    }
+
+    #[test]
+    fn any_key_confirms_everything() {
+        let protocols = [completion_protocol("lorem").complete(|s: &str| vec![format!("{s}xyz")])];
+        let mut input = tui_input::Input::new("lorem a".into());
+        let mut comp = CompletionState { confirmed: 7, ..Default::default() };
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert!(input.value().len() > comp.confirmed);
+
+        confirm_all(&mut input, &mut comp);
+        assert_eq!(comp.confirmed, input.value().chars().count());
+        assert_eq!(comp.index, None, "cycle resets on confirm");
+
+        // A subsequent tab re-completes from the now-longer confirmed base.
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "lorem axyzxyz");
+    }
+
+    #[test]
+    fn split_confirmed_is_char_safe() {
+        let (a, b) = split_confirmed("aé你bc", 3);
+        assert_eq!((a, b), ("aé你", "bc"));
+        let (a, b) = split_confirmed("aé你bc", 5);
+        assert_eq!((a, b), ("aé你bc", ""));
+        let (a, b) = split_confirmed("aé你bc", 0);
+        assert_eq!((a, b), ("", "aé你bc"));
+    }
+
+    #[test]
+    fn tab_without_matches_is_noop() {
+        let protocols = [completion_protocol("lorem")];
+        let mut input = tui_input::Input::new("zz".into());
+        let mut comp = CompletionState { confirmed: 2, ..Default::default() };
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "zz");
+        assert_eq!(comp.index, None);
+    }
+
+    #[test]
+    fn args_position_without_completer_is_noop() {
+        let protocols = [completion_protocol("lorem")];
+        let mut input = tui_input::Input::new("lorem x".into());
+        let mut comp = CompletionState { confirmed: 8, ..Default::default() };
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "lorem x");
+        assert_eq!(comp.index, None);
+    }
+
+    #[test]
+    fn completer_defaults_to_none() {
+        assert!(completion_protocol("x").completer.is_none());
+    }
 
     fn make_mouse_state() -> MouseState {
         MouseState::default()

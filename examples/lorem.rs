@@ -24,6 +24,23 @@ fn lorem_protocol() -> Protocol {
             Ok(())
         })
         .finalize(|| Ok(ShellAction::Continue))
+        // Demo of plugin tab completion: completes the last word; the
+        // suggestion appears as a flashing, unconfirmed tail (Tab cycles,
+        // ESC deletes, any other key confirms).
+        .complete(|s: &str| {
+            let (head, last) = s.rsplit_once(' ').unwrap_or(("", s));
+            ["ipsum", "dolor", "sit"]
+                .iter()
+                .filter(|w| w.starts_with(last))
+                .map(|w| {
+                    if head.is_empty() {
+                        (*w).to_string()
+                    } else {
+                        format!("{head} {w}")
+                    }
+                })
+                .collect()
+        })
 }
 
 fn main() {
