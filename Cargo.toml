@@ -5,6 +5,9 @@ edition = "2021"
 license = "MIT"
 description = "Generic server-client framework with TUI/CLI frontends. Define protocols with type-safe builder chains."
 
+[workspace]
+members = ["display"]
+
 [features]
 default = ["tui"]
 tui = ["dep:crossterm", "dep:ratatui", "dep:tui-input", "dep:textwrap", "dep:base64", "dep:signal-hook"]

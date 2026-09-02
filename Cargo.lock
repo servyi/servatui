@@ -491,6 +491,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "servatui-display"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "servyi-servatui",
+]
+
+[[package]]
 name = "servyi-ioprovider"
 version = "0.1.0"
 source = "git+https://github.com/servyi/ioprovider.git#c5ea06a74a20d12f9a7282d2ae34c821f06d278c"

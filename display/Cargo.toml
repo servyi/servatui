@@ -1,0 +1,11 @@
+[package]
+name = "servatui-display"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Window-manager layers for servatui TUIs: priorities, activation, taskbar, and event routing."
+
+[dependencies]
+servyi-servatui = { path = ".." }
+ratatui = { version = "0.28", features = ["unstable-widget-ref"] }
+crossterm = "0.28"
