@@ -121,7 +121,9 @@ fn sigterm_restores_mouse_capture_and_alt_screen() {
     // Sync point: the TUI has enabled mouse capture (and is rendering).
     assert!(
         wait_until(15_000, || typescript_contains(&ts, b"\x1b[?1006h")),
-        "TUI never enabled mouse capture — did it start?"
+        "TUI never enabled mouse capture — did it start? (a stale example \
+         binary from a filtered or --no-default-features run prints 'TUI \
+         feature not enabled' instead; run a plain `cargo test` to rebuild)"
     );
     let pid = loop {
         assert!(
