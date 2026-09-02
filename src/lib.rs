@@ -14,6 +14,8 @@ pub mod mouse;
 pub mod protocol;
 pub mod server;
 #[cfg(feature = "tui")]
+mod terminal_restore;
+#[cfg(feature = "tui")]
 pub mod tui;
 
 pub use connection::{RawConnection, TypedConnection, SocketConnection};

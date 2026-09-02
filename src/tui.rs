@@ -508,11 +508,14 @@ where
     F: FnMut(&mut Vec<WidgetEntry>),
 {
     use crossterm::execute;
-    use crossterm::terminal::{
-        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-    };
-    use crossterm::event::{EnableMouseCapture, DisableMouseCapture};
+    use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+    use crossterm::event::EnableMouseCapture;
     use ratatui::{backend::CrosstermBackend, Terminal};
+
+    // Restore on every abnormal path (signals, panics) — not just the
+    // normal-exit one below. Installed before the modes are enabled so
+    // a failure halfway through setup is also covered.
+    let _guard = crate::terminal_restore::TerminalGuard::install();
 
     enable_raw_mode().map_err(|e| e.to_string())?;
     execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture).map_err(|e| e.to_string())?;
@@ -530,8 +533,9 @@ where
         socket, protocols, &mut on_overlay, &mut mouse,
     );
 
-    execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen).ok();
-    disable_raw_mode().ok();
+    // The guard's Drop also restores (idempotent) — this explicit call
+    // just ensures the farewell lands on the main screen.
+    crate::terminal_restore::restore_terminal();
     println!("Goodbye.");
     result
 }
