@@ -295,6 +295,11 @@ pub struct Protocol {
 }
 
 impl Protocol {
+    /// The registered tab-completion function, if any (see [`Self::complete`]).
+    pub fn completer(&self) -> Option<&Completer> {
+        self.completer.as_ref()
+    }
+
     /// Register a tab-completion function.
     ///
     /// The function receives the whole **confirmed** input string (command
