@@ -11,7 +11,7 @@
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders};
-use servatui_display::{Display, DisplayLayer, EventResult, LayerCtx};
+use servatui_display::{Display, DisplayLayer, EventResult, LayerCtx, StackIntent};
 use servyi_servatui::{Protocol, WidgetEntry};
 
 struct Popup {
@@ -36,9 +36,9 @@ impl Popup {
 }
 
 impl DisplayLayer for Popup {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         if !self.open {
-            return;
+                        return StackIntent::Keep;
         }
         // Full-screen entry => modal: clicks outside the visible box still
         // reach this layer and close it. The colored underlay the Display
@@ -48,7 +48,9 @@ impl DisplayLayer for Popup {
             widget: Box::new(Block::default().borders(Borders::ALL).title(self.title)),
             area: self.visible_area(_ctx.terminal_area),
         });
-    }
+    
+    StackIntent::Keep
+}
 
     fn on_event(&mut self, ev: &Event, ctx: &LayerCtx) -> EventResult {
         match ev {

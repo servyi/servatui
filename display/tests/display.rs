@@ -1,6 +1,7 @@
 //! Headless tests for the display layer stack: routing, priorities,
 //! attribution, underlays, taskbar, grab, and rotation.
 
+use std::sync::Arc;
 use std::path::PathBuf;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -8,7 +9,7 @@ use ratatui::layout::Rect;
 use ratatui::widgets::Paragraph;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
-use servatui_display::{detect_color_count, palette_for, Display, DisplayLayer, EventResult, LayerCtx, LayerId};
+use servatui_display::{detect_color_count, palette_for, Display, DisplayLayer, EventResult, LayerCtx, LayerId, StackIntent};
 use servyi_servatui::{WidgetEntry, WIDGET_INPUT, WIDGET_LOG};
 
 // ── helpers ───────────────────────────────────────────────────────────
@@ -80,9 +81,11 @@ impl Toy {
 }
 
 impl DisplayLayer for Toy {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         widgets.push(widget(self.widget_name, self.area));
-    }
+    
+    StackIntent::Keep
+}
 
     fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
         self.log.push(format!("{ev:?}"));
@@ -372,13 +375,15 @@ struct FillLayer {
 }
 
 impl DisplayLayer for FillLayer {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         widgets.push(WidgetEntry {
             name: self.name,
             widget: Box::new(Fill('A')),
             area: self.area,
         });
-    }
+    
+    StackIntent::Keep
+}
 }
 
 struct ParaLayer {
@@ -387,7 +392,7 @@ struct ParaLayer {
 }
 
 impl DisplayLayer for ParaLayer {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         widgets.push(WidgetEntry {
             name: "b.para",
             widget: Box::new(Paragraph::new("B")),
@@ -398,7 +403,9 @@ impl DisplayLayer for ParaLayer {
             widget: Box::new(Paragraph::new("2")),
             area: self.second,
         });
-    }
+    
+    StackIntent::Keep
+}
 }
 
 #[test]
@@ -537,4 +544,149 @@ fn underlay_paints_layer_color_behind_widget() {
     let cell = terminal.backend().buffer()[(15u16, 10u16)].clone();
     assert_eq!(cell.bg, color, "popup area must carry the layer color underlay");
     let _ = PathBuf::new();
+}
+
+// ── click-to-focus, on_active, hide_when_empty, stack intents ─────────
+
+#[test]
+fn clicking_builtin_area_activates_builtin_without_swallowing() {
+    // A popup off to the right; clicking the log area (the builtin's
+    // widget) must focus the builtin — while the event still falls
+    // through to the core so log selection keeps working.
+    let (mut display, _ids) =
+        display_with(vec![Toy::new("pop", rect(60, 0, 15, 5)).swallow_mouse()]);
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+
+    assert!(!display.route_event(&down(5, 10)), "press must fall through to the core");
+    assert_eq!(display.topmost(), Some(LayerId::BUILTIN), "click focuses the builtin layer");
+}
+
+#[test]
+fn on_active_fires_when_a_layer_becomes_topmost() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    struct Active(Arc<AtomicU32>);
+    impl DisplayLayer for Active {
+        fn on_overlay(&mut self, _c: &mut LayerCtx, _w: &mut Vec<WidgetEntry>) -> StackIntent {
+            StackIntent::Keep
+        }
+        fn on_active(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let count = Arc::new(AtomicU32::new(0));
+    let mut display = Display::with_palette(palette_for(16));
+    let a = display.add_layer(Box::new(Active(count.clone())));
+    let b = display.add_layer(Box::new(Toy::new("b", rect(0, 0, 5, 5))));
+
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    assert_eq!(count.load(Ordering::SeqCst), 0, "b is on top; a was never active");
+
+    display.activate(a);
+    assert_eq!(count.load(Ordering::SeqCst), 1, "activating a fires on_active");
+    display.activate(a);
+    assert_eq!(count.load(Ordering::SeqCst), 2, "re-activating fires again");
+    display.activate(b);
+    assert_eq!(count.load(Ordering::SeqCst), 2, "activating b does not fire a's event");
+    display.activate(a);
+    assert_eq!(count.load(Ordering::SeqCst), 3, "becoming topmost again fires");
+}
+
+#[test]
+fn hide_when_empty_layers_keep_their_taskbar_slot() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Shy {
+        show: Arc<AtomicBool>,
+    }
+    impl DisplayLayer for Shy {
+        fn hide_when_empty(&self) -> bool {
+            true
+        }
+        fn on_overlay(&mut self, _c: &mut LayerCtx, w: &mut Vec<WidgetEntry>) -> StackIntent {
+            if self.show.load(Ordering::SeqCst) {
+                w.push(widget("shy.pop", rect(0, 12, 5, 5)));
+            }
+            StackIntent::Keep
+        }
+    }
+
+    let show = Arc::new(AtomicBool::new(false));
+    let mut display = Display::with_palette(palette_for(16));
+    display.add_layer(Box::new(Toy::new("a", rect(0, 0, 5, 5))));
+    let shy = display.add_layer(Box::new(Shy { show: show.clone() }));
+
+    let buttons = |display: &mut Display| {
+        let mut frame = builtin_frame();
+        display.frame(&mut frame);
+        let mut cells: Vec<Rect> =
+            frame.iter().filter(|w| w.name == "display.taskbar").map(|w| w.area).collect();
+        cells.sort_by_key(|r| r.x);
+        cells
+    };
+
+    // Hidden while empty: no button, but the slot is reserved.
+    let hidden = buttons(&mut display);
+    assert_eq!(hidden.len(), 2, "hidden layer has no taskbar button");
+
+    show.store(true, Ordering::SeqCst);
+    let shown = buttons(&mut display);
+    assert_eq!(shown.len(), 3, "button appears once the layer has widgets");
+    let shy_button = shown[2];
+
+    // Hiding again frees the button but not the slot: a NEW layer must not
+    // steal the shy layer's slot.
+    show.store(false, Ordering::SeqCst);
+    assert_eq!(buttons(&mut display).len(), 2);
+    display.add_layer(Box::new(Toy::new("c", rect(0, 16, 5, 5))));
+    let after = buttons(&mut display);
+    assert_eq!(after.len(), 3);
+    assert_eq!(after[2].x, shy_button.x + 4, "c takes the NEXT slot, not shy's");
+
+    show.store(true, Ordering::SeqCst);
+    let final_buttons = buttons(&mut display);
+    assert!(final_buttons.contains(&shy_button), "shy reclaims its original slot");
+    let _ = shy;
+}
+
+#[test]
+fn on_overlay_intents_move_layers_across_frames() {
+    use std::sync::{Arc, Mutex};
+
+    struct Intent(Arc<Mutex<StackIntent>>);
+    impl DisplayLayer for Intent {
+        fn on_overlay(&mut self, _c: &mut LayerCtx, _w: &mut Vec<WidgetEntry>) -> StackIntent {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    let intent = Arc::new(Mutex::new(StackIntent::Keep));
+    let mut display = Display::with_palette(palette_for(16));
+    let bottom = display.add_layer(Box::new(Intent(intent.clone())));
+    let top = display.add_layer(Box::new(Toy::new("top", rect(0, 0, 5, 5))));
+
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    assert_eq!(display.topmost(), Some(top));
+
+    // The bottom layer asks to rise: it is on top next frame.
+    *intent.lock().unwrap() = StackIntent::Top;
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    assert_eq!(display.topmost(), Some(bottom));
+
+    // And asks to sink back.
+    *intent.lock().unwrap() = StackIntent::Bottom;
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    assert_eq!(display.topmost(), Some(top));
+
+    // Keep changes nothing.
+    *intent.lock().unwrap() = StackIntent::Keep;
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    assert_eq!(display.topmost(), Some(top));
 }

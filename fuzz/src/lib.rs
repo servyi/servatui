@@ -1245,12 +1245,13 @@ struct FuzzLayer {
 }
 
 impl servatui_display::DisplayLayer for FuzzLayer {
-    fn on_overlay(&mut self, _ctx: &mut servatui_display::LayerCtx, widgets: &mut Vec<servyi_servatui::WidgetEntry>) {
+    fn on_overlay(&mut self, _ctx: &mut servatui_display::LayerCtx, widgets: &mut Vec<servyi_servatui::WidgetEntry>) -> servatui_display::StackIntent {
         widgets.push(servyi_servatui::WidgetEntry {
             name: self.name,
             widget: Box::new(ratatui::widgets::Paragraph::new(self.name)),
             area: self.area,
         });
+        servatui_display::StackIntent::Keep
     }
 
     fn on_event(&mut self, ev: &crossterm::event::Event, _ctx: &servatui_display::LayerCtx) -> servatui_display::EventResult {
@@ -1279,7 +1280,7 @@ pub struct DisplayCase {
 /// Drive a Display through a full frame/route lifecycle with realistic
 /// (valid-value) event sequences and check the routing invariants.
 pub fn run_display_case(c: &DisplayCase) {
-    use servatui_display::{Display, EventResult, LayerId};
+    use servatui_display::{Display, EventResult, LayerId, StackIntent};
 
     let w = (40 + c.term_w % 40) as u16; // 40..=79
     let h = (10 + c.term_h % 30) as u16; // 10..=39

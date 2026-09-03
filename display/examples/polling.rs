@@ -28,7 +28,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use servatui_display::{Display, DisplayLayer, EventResult, LayerCtx};
+use servatui_display::{Display, DisplayLayer, EventResult, LayerCtx, StackIntent};
 use servyi_servatui::connection::TypedConnection;
 use servyi_servatui::{
     BufferConsole, NoInput, Plugin, Protocol, ServerHandle, ShellAction, SocketConnection,
@@ -126,9 +126,9 @@ impl DisplayLayer for NotesLayer {
         'T'
     }
 
-    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) {
+    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         if !self.open {
-            return;
+                        return StackIntent::Keep;
         }
         let title = match &self.committed {
             Some(c) => format!(" notes: {c} — n reopens "),
@@ -142,7 +142,9 @@ impl DisplayLayer for NotesLayer {
             ),
             area: notes_area(ctx.terminal_area),
         });
-    }
+    
+    StackIntent::Keep
+}
 
     fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
         if let Event::Mouse(m) = ev {
@@ -222,7 +224,7 @@ impl DisplayLayer for PollLayer {
         'N'
     }
 
-    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) {
+    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         // Poll at most every 2s (on_overlay runs ~10x/s while idle).
         let due = match self.last_poll {
             None => true,
@@ -244,7 +246,9 @@ impl DisplayLayer for PollLayer {
                 area: popup_area(ctx.terminal_area, n_lines),
             });
         }
-    }
+    
+    StackIntent::Keep
+}
 
     fn on_event(&mut self, ev: &Event, ctx: &LayerCtx) -> EventResult {
         if self.numbers.len() <= self.seen {

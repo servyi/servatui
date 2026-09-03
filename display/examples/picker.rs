@@ -9,7 +9,7 @@
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph};
-use servatui_display::{Display, DisplayLayer, EventResult, LayerCtx};
+use servatui_display::{Display, DisplayLayer, EventResult, LayerCtx, StackIntent};
 use servyi_servatui::{Protocol, WidgetEntry};
 
 const OPTIONS: &[&str] = &["verify", "show", "status", "continue", "exit"];
@@ -38,9 +38,9 @@ impl DisplayLayer for Picker {
         'P'
     }
 
-    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) {
+    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         if !self.open {
-            return;
+            return StackIntent::Keep;
         }
         let title = match &self.committed {
             Some(c) => format!(" Picker — committed: {c} (r reopens) "),
@@ -62,7 +62,9 @@ impl DisplayLayer for Picker {
             widget: Box::new(Paragraph::new(items).block(Block::default().borders(Borders::ALL).title(title))),
             area: self.area(ctx.terminal_area),
         });
-    }
+    
+    StackIntent::Keep
+}
 
     fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
         let Event::Key(k) = ev else { return EventResult::Pass };

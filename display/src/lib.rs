@@ -68,12 +68,39 @@ pub enum EventResult {
     Swallow,
 }
 
+/// What a layer wants to happen to its stack position after its
+/// [`DisplayLayer::on_overlay`] call: rise to the top, sink to the bottom,
+/// or keep its current priority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackIntent {
+    Keep,
+    Top,
+    Bottom,
+}
+
 /// One window-manager layer.
 pub trait DisplayLayer {
     /// Contribute widgets to this frame's stack. Widgets pushed here are
     /// attributed to this layer; render order is vec order, so layers run
     /// in priority order (higher priority draws later = on top).
-    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>);
+    ///
+    /// The return value states where the layer wants to sit on the next
+    /// frame: [`StackIntent::Top`] rises it above everyone, `Bottom` sinks
+    /// it below everyone, `Keep` leaves the priority as it is.
+    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent;
+
+    /// Called when this layer becomes the topmost one (activation), e.g.
+    /// via a taskbar click, Shift+Tab rotation, a swallowed press, or a
+    /// [`StackIntent::Top`] request. Not fired for layers that merely get
+    /// added on top.
+    fn on_active(&mut self) {}
+
+    /// If `true`, the layer is hidden from the taskbar and cannot be
+    /// clicked (its content has no areas anyway) while it owns no widgets —
+    /// without losing its reserved taskbar slot.
+    fn hide_when_empty(&self) -> bool {
+        false
+    }
 
     /// Offer an event. Mouse events arrive only when the pointer is inside
     /// one of this layer's owned areas (or while it holds the grab);
@@ -205,13 +232,17 @@ impl Default for Display {
 struct BuiltinLayer;
 
 impl DisplayLayer for BuiltinLayer {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, _widgets: &mut Vec<WidgetEntry>) {}
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx, _widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+        StackIntent::Keep
+    }
 }
 
 struct NoopLayer;
 
 impl DisplayLayer for NoopLayer {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, _widgets: &mut Vec<WidgetEntry>) {}
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx, _widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+        StackIntent::Keep
+    }
 }
 
 impl Display {
@@ -379,7 +410,7 @@ impl Display {
             let mut layer = std::mem::replace(&mut self.slots[i].layer, Box::new(NoopLayer));
             let mut ctx =
                 LayerCtx { id, color, terminal_area: self.terminal_area, my_widgets: &cached };
-            layer.on_overlay(&mut ctx, widgets);
+            let _intent = layer.on_overlay(&mut ctx, widgets);
             self.slots[i].layer = layer;
 
             for w in widgets.iter() {

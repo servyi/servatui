@@ -9,7 +9,7 @@
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph};
-use servatui_display::{Display, DisplayLayer, EventResult, LayerCtx};
+use servatui_display::{Display, DisplayLayer, EventResult, LayerCtx, StackIntent};
 use servyi_servatui::{Protocol, WidgetEntry};
 
 struct TextBox {
@@ -35,9 +35,9 @@ impl DisplayLayer for TextBox {
         'T'
     }
 
-    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) {
+    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         if !self.open {
-            return;
+                        return StackIntent::Keep;
         }
         let title = match &self.committed {
             Some(c) => format!(" Textbox — committed: {c} (t reopens) "),
@@ -48,7 +48,9 @@ impl DisplayLayer for TextBox {
             widget: Box::new(Paragraph::new(self.buffer.clone()).block(Block::default().borders(Borders::ALL).title(title))),
             area: self.area(ctx.terminal_area),
         });
-    }
+    
+    StackIntent::Keep
+}
 
     fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
         let Event::Key(k) = ev else { return EventResult::Pass };

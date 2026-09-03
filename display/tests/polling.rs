@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph};
-use servatui_display::{Display, DisplayLayer, EventResult, LayerCtx};
+use servatui_display::{Display, DisplayLayer, EventResult, LayerCtx, StackIntent};
 use servyi_servatui::connection::TypedConnection;
 use servyi_servatui::{
     BufferConsole, NoInput, Plugin, Protocol, ServerHandle, ShellAction, SocketConnection,
@@ -42,7 +42,7 @@ struct EagerPollLayer {
 }
 
 impl DisplayLayer for EagerPollLayer {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         let raw = SocketConnection::connect(&self.socket)
             .and_then(|mut conn| {
                 conn.send_typed(&"numbers".to_string())?;
@@ -64,7 +64,9 @@ impl DisplayLayer for EagerPollLayer {
                 area: Rect::new(40, 0, 30, 4),
             });
         }
-    }
+    
+    StackIntent::Keep
+}
 
     fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
         if self.numbers.len() <= self.seen {
