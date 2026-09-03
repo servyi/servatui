@@ -635,7 +635,7 @@ fn hide_when_empty_layers_keep_their_taskbar_slot() {
     show.store(true, Ordering::SeqCst);
     let shown = buttons(&mut display);
     assert_eq!(shown.len(), 3, "button appears once the layer has widgets");
-    let shy_button = shown[2];
+    let _ = shown;
 
     // Hiding again frees the button but not the slot: a NEW layer must not
     // steal the shy layer's slot.
@@ -643,12 +643,17 @@ fn hide_when_empty_layers_keep_their_taskbar_slot() {
     assert_eq!(buttons(&mut display).len(), 2);
     display.add_layer(Box::new(Toy::new("c", rect(0, 16, 5, 5))));
     let after = buttons(&mut display);
-    assert_eq!(after.len(), 3);
-    assert_eq!(after[2].x, shy_button.x + 4, "c takes the NEXT slot, not shy's");
+    assert_eq!(after.len(), 3, "c's button joins, shy stays hidden");
+    // Four reserved slots now, so the centered strip start moves to
+    // (80 - 15) / 2 = 32; c takes slot 3, NOT shy's slot 2.
+    assert_eq!(after[2].x, 32 + 3 * 4, "c takes the NEXT slot, not shy's");
 
     show.store(true, Ordering::SeqCst);
     let final_buttons = buttons(&mut display);
-    assert!(final_buttons.contains(&shy_button), "shy reclaims its original slot");
+    assert_eq!(final_buttons.len(), 4);
+    // Shy reclaims slot 2 — between a (slot 1) and c (slot 3).
+    assert_eq!(final_buttons[2].x, 32 + 2 * 4, "shy reclaims its reserved slot");
+    assert_eq!(final_buttons[3].x, 32 + 3 * 4, "c keeps its slot");
     let _ = shy;
 }
 

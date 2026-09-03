@@ -99,6 +99,15 @@ fn has_popup(frame: &[WidgetEntry]) -> Option<Rect> {
     frame.iter().find(|w| w.name == "polling.popup").map(|w| w.area)
 }
 
+fn down_event(col: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: col,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
 #[test]
 fn poll_popup_appears_acknowledges_and_reappears() {
     let socket =
@@ -119,7 +128,7 @@ fn poll_popup_appears_acknowledges_and_reappears() {
     }
 
     let mut display = Display::with_palette(vec![ratatui::style::Color::Blue]);
-    display.add_layer(Box::new(EagerPollLayer { socket: socket.clone(), numbers: Vec::new(), seen: 0 }));
+    let layer_id = display.add_layer(Box::new(EagerPollLayer { socket: socket.clone(), numbers: Vec::new(), seen: 0 }));
 
     // First poll: one unseen number -> popup appears.
     let mut frame = builtin_frame();
@@ -127,7 +136,7 @@ fn poll_popup_appears_acknowledges_and_reappears() {
     has_popup(&frame).expect("unseen number must open the popup");
 
     // A click OUTSIDE the popup falls through (not acknowledged by stray
-    // clicks elsewhere).
+    // clicks elsewhere) — and focuses the builtin layer (click-to-focus).
     let stray = Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 5,
@@ -139,9 +148,20 @@ fn poll_popup_appears_acknowledges_and_reappears() {
     display.frame(&mut frame);
     assert!(has_popup(&frame).is_some(), "stray click must not acknowledge");
 
-    // Esc acknowledges: popup gone while nothing new arrived.
+    // With the builtin focused, keystrokes go to the core's input line:
+    // Esc no longer reaches the popup below.
     let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(display.route_event(&esc));
+    assert!(!display.route_event(&esc), "builtin topmost: Esc goes to the core");
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    assert!(has_popup(&frame).is_some(), "Esc with builtin focused must not acknowledge");
+
+    // Reactivating the popup via its taskbar button (slot 1 of 2: strip
+    // start (80-7)/2 = 36, button at x 40) puts it back on top WITHOUT
+    // acknowledging — and now Esc reaches it again.
+    assert!(display.route_event(&down_event(41, 23)));
+    assert_eq!(display.topmost(), Some(layer_id), "taskbar click reactivates the popup layer");
+    assert!(display.route_event(&esc), "popup back on top: Esc reaches it again");
     let mut frame = builtin_frame();
     display.frame(&mut frame);
     assert!(has_popup(&frame).is_none(), "Esc must acknowledge");

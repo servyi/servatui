@@ -1234,6 +1234,8 @@ pub struct FuzzLayerSpec {
     h: u8,
     swallow_key: Option<FuzzKey>,
     swallow_mouse: bool,
+    /// 0 = Keep, 1 = Top, 2 = Bottom (mod 3).
+    intent: u8,
 }
 
 const FUZZ_NAMES: &[&str] = &["fz.a", "fz.b", "fz.c", "fz.d", "fz.e", "fz.f"];
@@ -1251,7 +1253,11 @@ impl servatui_display::DisplayLayer for FuzzLayer {
             widget: Box::new(ratatui::widgets::Paragraph::new(self.name)),
             area: self.area,
         });
-        servatui_display::StackIntent::Keep
+        match self.spec.intent % 3 {
+            1 => servatui_display::StackIntent::Top,
+            2 => servatui_display::StackIntent::Bottom,
+            _ => servatui_display::StackIntent::Keep,
+        }
     }
 
     fn on_event(&mut self, ev: &crossterm::event::Event, _ctx: &servatui_display::LayerCtx) -> servatui_display::EventResult {

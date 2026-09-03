@@ -115,12 +115,20 @@ continuous id mapped onto a color palette (≤8 terminal colors: all of them;
   at stable id-assigned slots recycled on removal.
 - **Routing** (`Display::route_event`): Shift+Tab is system-reserved
   (carousel rotation: each press raises the bottom-most layer); presses
-  activate + grab the pointer (drags/release follow the grabber outside its
-  areas); other mouse events hit-test topmost-first; keys/resize/focus are
-  offered topmost-first with fall-through — unless the builtin layer is
-  topmost, in which case they fall straight through to the core's input
-  line so layers below cannot intercept; everything passed falls through
-  to the builtin handling.
+  are click-to-focus (the topmost layer whose area contains the click is
+  activated — clicking the log/input activates the builtin) and a
+  swallowed press also grabs the pointer (drags/release follow the
+  grabber outside its areas); other mouse events hit-test topmost-first;
+  keys/resize/focus are offered topmost-first with fall-through — unless
+  the builtin layer is topmost, in which case they fall straight through
+  to the core's input line so layers below cannot intercept; everything
+  passed falls through to the builtin handling.
+- **Layer lifecycle extras**: `on_overlay` returns a StackIntent
+  (Top/Bottom/Keep) applied to the next frame's ordering; `on_active`
+  fires when activate() targets the layer (taskbar click, Shift+Tab,
+  swallowed press, click-to-focus, Top intent); `hide_when_empty()`
+  layers lose their taskbar button while they own no widgets but keep
+  their reserved slot.
 
 **When changing routing or attribution logic:**
 1. Write the test in `display/tests/display.rs` BEFORE the fix (must fail)

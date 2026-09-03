@@ -10,7 +10,8 @@
 //! 1. the layer list is sorted by priority and priorities are collapsed to
 //!    adjacent integers (ties stay tied);
 //! 2. each layer's `on_overlay` contributes widgets in that order — later
-//!    layers draw on top;
+//!    layers draw on top — and states a [`StackIntent`] (`Top`, `Bottom`,
+//!    `Keep`) for where it wants to sit next frame;
 //! 3. widgets appearing during a layer's call are attributed to that layer
 //!    (by name; the builtin widgets the core pushed beforehand are
 //!    attributed to the builtin layer), and the vec is regrouped so each
@@ -31,9 +32,12 @@
 //! - **Shift+Tab** is system-reserved: it rotates activation through all
 //!   layers, stepping down the stack and wrapping around.
 //! - A press on a taskbar button activates that layer.
-//! - A layer that swallows a press becomes active (priority = max + 1) and
-//!   grabs the pointer: subsequent drags and the release are delivered to
-//!   it exclusively.
+//! - A press activates the topmost layer whose area contains the click —
+//!   **click-to-focus**, so clicking the log/input activates the builtin
+//!   layer even though the event then falls through to the core. A layer
+//!   that swallows a press becomes active (priority = max + 1) and grabs
+//!   the pointer: subsequent drags and the release are delivered to it
+//!   exclusively.
 //! - Other mouse events hit-test topmost-first through the layers' owned
 //!   widget areas; keys, resize and focus events are offered topmost-first
 //!   to every layer (fall-through).
@@ -319,13 +323,59 @@ impl Display {
 
     /// Make a layer the topmost one (priority = max + 1). Re-sorts and
     /// collapses immediately so [`Display::topmost`]/[`Display::stack_order`]
-    /// stay consistent without waiting for the next frame.
+    /// stay consistent without waiting for the next frame. Fires
+    /// [`DisplayLayer::on_active`] on the layer.
     pub fn activate(&mut self, id: LayerId) {
         let top = self.slots.iter().map(|s| s.priority).max().unwrap_or(0);
         if let Some(slot) = self.slots.iter_mut().find(|s| s.id == id) {
             slot.priority = top + 1;
         }
         self.resort();
+        self.notify_active(id);
+    }
+
+    /// Deliver the "became active" event to a layer (swap-out pattern —
+    /// the slots vec is otherwise borrowed immutably by callers).
+    fn notify_active(&mut self, id: LayerId) {
+        let Some(idx) = self.slots.iter().position(|s| s.id == id) else {
+            return;
+        };
+        let mut layer = std::mem::replace(&mut self.slots[idx].layer, Box::new(NoopLayer));
+        layer.on_active();
+        self.slots[idx].layer = layer;
+    }
+
+    /// Apply the stack intents collected during this frame's `on_overlay`
+    /// passes: `Top` requesters rise above everyone, `Bottom` requesters
+    /// sink below everyone, relative order otherwise preserved; priorities
+    /// renumbered. Fires `on_active` if the topmost layer changed.
+    fn apply_intents(&mut self, intents: &HashMap<LayerId, StackIntent>) {
+        if intents.is_empty() {
+            return;
+        }
+        let prev_top = self.slots.last().map(|s| s.id);
+        let old = std::mem::take(&mut self.slots);
+        let mut bottoms = Vec::with_capacity(old.len());
+        let mut keeps = Vec::with_capacity(old.len());
+        let mut tops = Vec::with_capacity(old.len());
+        for slot in old {
+            match intents.get(&slot.id) {
+                Some(StackIntent::Top) => tops.push(slot),
+                Some(StackIntent::Bottom) => bottoms.push(slot),
+                _ => keeps.push(slot),
+            }
+        }
+        self.slots = bottoms;
+        self.slots.extend(keeps);
+        self.slots.extend(tops);
+        for (p, slot) in self.slots.iter_mut().enumerate() {
+            slot.priority = p as u64;
+        }
+        if self.slots.last().map(|s| s.id) != prev_top {
+            if let Some(id) = self.slots.last().map(|s| s.id) {
+                self.notify_active(id);
+            }
+        }
     }
 
     /// Sort by (priority, insertion order) and collapse priorities to
@@ -399,7 +449,9 @@ impl Display {
             self.owners.entry(w.name).or_insert(self.builtin_id);
         }
 
-        // Run each layer's overlay pass, attributing newly added names.
+        // Run each layer's overlay pass, attributing newly added names and
+        // collecting stack intents.
+        let mut intents: HashMap<LayerId, StackIntent> = HashMap::new();
         for i in 0..self.slots.len() {
             let before: HashSet<&'static str> = widgets.iter().map(|w| w.name).collect();
             let (id, cached) = {
@@ -410,8 +462,9 @@ impl Display {
             let mut layer = std::mem::replace(&mut self.slots[i].layer, Box::new(NoopLayer));
             let mut ctx =
                 LayerCtx { id, color, terminal_area: self.terminal_area, my_widgets: &cached };
-            let _intent = layer.on_overlay(&mut ctx, widgets);
+            let intent = layer.on_overlay(&mut ctx, widgets);
             self.slots[i].layer = layer;
+            intents.insert(id, intent);
 
             for w in widgets.iter() {
                 if !before.contains(&w.name) {
@@ -419,6 +472,9 @@ impl Display {
                 }
             }
         }
+
+        // Apply the requested stack moves for this frame's ordering.
+        self.apply_intents(&intents);
 
         // Refresh the per-layer widget caches from the final vec.
         self.cached_widgets.clear();
@@ -486,8 +542,15 @@ impl Display {
         };
         let start =
             self.terminal_area.x + (self.terminal_area.width.saturating_sub(strip_w)) / 2;
-        let n = self.slots.len();
+        let top_id = self.slots.last().map(|s| s.id);
         for (i, slot) in self.slots.iter().enumerate() {
+            // hide_when_empty: no button (and nothing clickable) while the
+            // layer owns no widgets — its slot stays reserved.
+            let hidden = slot.layer.hide_when_empty()
+                && self.cached_widgets.get(&slot.id).is_none_or(|ws| ws.is_empty());
+            if hidden {
+                continue;
+            }
             let s = self.slot_of.get(&slot.id).copied().unwrap_or(i) as u16;
             let area = Rect::new(start + s * 4, row, 3, 1);
             let color = if slot.id == self.builtin_id {
@@ -496,7 +559,7 @@ impl Display {
                 self.layer_color(slot.id).unwrap_or(Color::DarkGray)
             };
             let mut style = Style::default().bg(color).fg(Color::Black);
-            if i + 1 == n {
+            if Some(slot.id) == top_id {
                 style = style.add_modifier(Modifier::BOLD);
             }
             widgets.push(WidgetEntry {
@@ -580,9 +643,14 @@ impl Display {
             }
         }
 
-        // Mouse events: hit-test through owned areas, topmost first.
+        // Mouse events: hit-test through owned areas, topmost first. A
+        // press focuses the topmost hit layer even when nobody swallows
+        // (click-to-focus) — that is how clicking the log/input activates
+        // the builtin layer — while the event still falls through to the
+        // core so the builtin handling keeps working.
         if let Event::Mouse(m) = ev {
             let is_down = matches!(m.kind, MouseEventKind::Down(_));
+            let mut first_hit: Option<LayerId> = None;
             for i in (0..self.slots.len()).rev() {
                 let id = self.slots[i].id;
                 let hit = self
@@ -592,12 +660,20 @@ impl Display {
                 if !hit {
                     continue;
                 }
+                if first_hit.is_none() {
+                    first_hit = Some(id);
+                }
                 if self.deliver(id, ev) == EventResult::Swallow {
                     if is_down {
                         self.activate(id);
                         self.grabbed = Some(id);
                     }
                     return true;
+                }
+            }
+            if is_down {
+                if let Some(id) = first_hit {
+                    self.activate(id);
                 }
             }
             return false;
