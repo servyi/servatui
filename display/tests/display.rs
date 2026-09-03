@@ -101,7 +101,7 @@ impl DisplayLayer for Toy {
     }
 }
 
-fn display_with(toys: Vec<Toy>) -> (Display, Vec<LayerId>) {
+fn display_with(toys: Vec<Toy>) -> (Display<'static>, Vec<LayerId>) {
     let mut display = Display::with_palette(palette_for(16));
     let ids = toys
         .into_iter()
@@ -470,20 +470,32 @@ fn activating_builtin_brings_its_widgets_to_front() {
 
 #[test]
 fn builtin_topmost_directs_keys_to_the_core() {
+    use servyi_servatui::tui::BuiltinTui;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     let (mut display, ids) = display_with(vec![
         Toy::new("a", rect(0, 0, 80, 24)).swallow_keys(&[KeyCode::Char('x')]),
     ]);
+    // Attach a real builtin TUI (as Display::run does): the builtin layer
+    // then handles events itself instead of passing to the core.
+    let socket = std::path::Path::new("/nonexistent-test.sock");
+    let tui = Rc::new(RefCell::new(BuiltinTui::new(socket, &[])));
+    display.attach_builtin(tui.clone());
+
     let mut frame = builtin_frame();
     display.frame(&mut frame);
     // User layer on top: it intercepts 'x'.
     assert!(display.route_event(&plain(KeyCode::Char('x'))));
+    assert_eq!(tui.borrow().input_value(), "", "user layer intercepted first");
 
-    // Builtin on top: keystrokes fall through to the core's input line,
-    // not to layers below it.
+    // Builtin on top: the builtin LAYER consumes the keystroke itself and
+    // layers below never see it — no router special case involved.
     display.activate(LayerId::BUILTIN);
     let mut frame = builtin_frame();
     display.frame(&mut frame);
-    assert!(!display.route_event(&plain(KeyCode::Char('x'))));
+    assert!(display.route_event(&plain(KeyCode::Char('x'))));
+    assert_eq!(tui.borrow().input_value(), "x", "key landed in the input line");
 
     // Raising the user layer back restores interception.
     display.activate(ids[0]);

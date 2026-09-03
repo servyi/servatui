@@ -563,6 +563,23 @@ where
 pub fn run_tui_with_events<F, G>(
     socket: &Path,
     protocols: &[Protocol],
+    on_overlay: F,
+    on_event: G,
+) -> Result<(), String>
+where
+    F: FnMut(&mut Vec<WidgetEntry>),
+    G: FnMut(&crossterm::event::Event) -> bool,
+{
+    let builtin = BuiltinTui::new(socket, protocols);
+    run_tui_managed(std::rc::Rc::new(std::cell::RefCell::new(builtin)), on_overlay, on_event)
+}
+
+/// Like [`run_tui_with_events`], but the caller supplies the (shared)
+/// builtin TUI — this is how the `servatui-display` crate routes the
+/// builtin's events through its builtin DisplayLayer while the very same
+/// state keeps rendering the log/input/scrollbar.
+pub fn run_tui_managed<F, G>(
+    builtin: std::rc::Rc<std::cell::RefCell<BuiltinTui<'_>>>,
     mut on_overlay: F,
     mut on_event: G,
 ) -> Result<(), String>
@@ -587,15 +604,10 @@ where
     let backend = SizeOverrideBackend { inner: CrosstermBackend::new(std::io::stdout()) };
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
 
-    let mut state = TuiState::new();
-    let mut input = Input::default();
-    let mut mouse = MouseState::default();
-
     let result = tui_loop(
-        &mut terminal, &mut state, &mut input,
-        socket, protocols,
+        &mut terminal,
+        builtin.as_ref(),
         &mut TuiHooks { on_overlay: &mut on_overlay, on_event: &mut on_event },
-        &mut mouse,
     );
 
     // The guard's Drop also restores (idempotent) — this explicit call
@@ -626,27 +638,359 @@ struct TuiHooks<'a> {
 }
 
 #[cfg(feature = "tui")]
+/// The builtin TUI (log + input line + scrollbar + their behavior) as one
+/// object, so the same code can run either directly inside `tui_loop` or
+/// inside a display layer (the `servatui-display` crate wraps a shared
+/// instance as its builtin [`servatui_display`] layer — the builtin is then
+/// an ordinary layer, not a special case in the router).
+///
+/// Shared via `Rc<RefCell<BuiltinTui>>` when a display drives it.
+pub struct BuiltinTui<'a> {
+    /// Log lines, scroll state, selection, and command history.
+    pub state: TuiState,
+    input: tui_input::Input,
+    completion: CompletionState,
+    mouse: MouseState,
+    socket: &'a Path,
+    protocols: &'a [Protocol],
+    vp: Option<ViewportCache>,
+    exit_requested: bool,
+}
+
+impl<'a> BuiltinTui<'a> {
+    pub fn new(socket: &'a Path, protocols: &'a [Protocol]) -> Self {
+        Self {
+            state: TuiState::new(),
+            input: tui_input::Input::default(),
+            completion: CompletionState::default(),
+            mouse: MouseState::default(),
+            socket,
+            protocols,
+            vp: None,
+            exit_requested: false,
+        }
+    }
+
+    /// The current input-line text.
+    pub fn input_value(&self) -> &str {
+        self.input.value()
+    }
+
+    /// Whether a handled event asked to leave the TUI (exit/quit/Ctrl+D).
+    pub fn exit_requested(&self) -> bool {
+        self.exit_requested
+    }
+
+    /// Poll interval for the event loop: shorter while auto-scrolling.
+    pub fn poll_ms(&self) -> u64 {
+        if self.mouse.auto_scroll.is_some() { 30 } else { 100 }
+    }
+
+    /// The builtin event handling (input line, completion, history, log
+    /// scrolling/selection, command execution). Returns `true` when the
+    /// event was consumed — key presses and mouse events always are;
+    /// everything else (non-press keys, resize, focus) is left for others.
+    pub fn handle_event(&mut self, ev: &crossterm::event::Event) -> bool {
+        use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+        use tui_input::backend::crossterm::EventHandler;
+
+        let Event::Key(key) = ev else {
+            let Event::Mouse(m) = ev else { return false };
+            if let Some(vp) = &self.vp {
+                handle_mouse_event(*m, &mut self.state, &mut self.mouse, vp);
+            }
+            return true;
+        };
+        if key.kind != KeyEventKind::Press {
+            return false;
+        }
+
+        let state = &mut self.state;
+        let input = &mut self.input;
+        let completion = &mut self.completion;
+
+        // Any key other than Tab confirms the whole input line (including
+        // a flashing, unconfirmed suggestion tail). Esc is the other
+        // exception: it DELETES the tail instead of confirming it, so it
+        // must not pass the gate first.
+        if key.code != KeyCode::Tab && key.code != KeyCode::Esc {
+            confirm_all(input, completion);
+        }
+        match key.code {
+            KeyCode::PageUp => { state.scroll_up = state.scroll_up.saturating_add(5); }
+            KeyCode::PageDown => { state.scroll_up = state.scroll_up.saturating_sub(5); }
+            KeyCode::Home => { state.scroll_up = u16::MAX; }
+            KeyCode::End => { state.scroll_up = 0; }
+            KeyCode::Up if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.scroll_up = state.scroll_up.saturating_add(1);
+            }
+            KeyCode::Down if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.scroll_up = state.scroll_up.saturating_sub(1);
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) && input.value().is_empty() => {
+                self.exit_requested = true;
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                input.reset(); state.history_idx = None;
+                confirm_all(input, completion);
+            }
+            KeyCode::Esc => {
+                esc_unconfirmed(input, completion);
+            }
+            KeyCode::Tab => {
+                tab_complete(input, completion, self.protocols);
+            }
+            KeyCode::Enter => {
+                let line = input.value().to_string();
+                input.reset();
+                confirm_all(input, completion);
+                state.history_idx = None;
+                let trimmed = line.trim();
+                if trimmed.is_empty() { return true; }
+                if trimmed == "exit" || trimmed == "quit" {
+                    self.exit_requested = true;
+                    return true;
+                }
+                if trimmed == "help" {
+                    state.log_lines.push("> help".into());
+                    state.log_lines.push("COMMANDS:".into());
+                    for p in self.protocols {
+                        state.log_lines.push(format!("  {:<12} {}", p.name, p.help));
+                    }
+                    state.scroll_up = 0;
+                    state.selection = None; // Clear on new output
+                    return true;
+                }
+
+                state.history.push(line.clone());
+                state.log_lines.push(format!("> {trimmed}"));
+                state.scroll_up = 0;
+                state.selection = None; // Clear on new output
+
+                let (cmd_name, args) = match trimmed.split_once(' ') {
+                    Some((n, r)) => (n, r),
+                    None => (trimmed, ""),
+                };
+
+                let proto = match self.protocols.iter().find(|p| p.name == cmd_name) {
+                    Some(p) => p,
+                    None => {
+                        state.log_lines.push(format!("Unknown: '{cmd_name}'"));
+                        return true;
+                    }
+                };
+
+                match execute_command(proto, args, self.socket) {
+                    Ok(output_lines) => state.log_lines.extend(output_lines),
+                    Err(e) => state.log_lines.push(format!("Error: {e}")),
+                }
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if !state.history.is_empty() {
+                    state.history_idx = Some(match state.history_idx {
+                        Some(0) => 0,
+                        Some(i) => i - 1,
+                        None => state.history.len() - 1,
+                    });
+                    *input = tui_input::Input::new(state.history[state.history_idx.unwrap()].clone());
+                    confirm_all(input, completion);
+                }
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                match state.history_idx {
+                    Some(i) if i + 1 < state.history.len() => {
+                        let new_idx = i + 1;
+                        state.history_idx = Some(new_idx);
+                        *input = tui_input::Input::new(state.history[new_idx].clone());
+                        confirm_all(input, completion);
+                    }
+                    _ => { state.history_idx = None; input.reset(); }
+                }
+            }
+            _ => {
+                let _ = input.handle_event(&crossterm::event::Event::Key(*key));
+                // The just-inserted edit is confirmed too: the boundary
+                // must never lag the last typed char.
+                confirm_all(input, completion);
+            }
+        }
+        true
+    }
+
+    /// Poll-timeout work: auto-scroll the log while a drag is held past
+    /// the viewport edge, extending the selection.
+    pub fn on_poll_timeout(&mut self) {
+        let Some(ref vp) = self.vp else { return };
+        let Some(scroll_up_dir) = self.mouse.auto_scroll else { return };
+        if !self.mouse.selecting {
+            return;
+        }
+        let state = &mut self.state;
+        let mouse = &mut self.mouse;
+        let max_scroll = vp.total_wrapped.saturating_sub(vp.log_inner.height as usize);
+        if scroll_up_dir {
+            // Auto-scroll up (towards older content)
+            if (state.scroll_up as usize) < max_scroll {
+                state.scroll_up += 1;
+            }
+            // Extend selection to top of viewport
+            let new_start = max_scroll.saturating_sub(state.scroll_up as usize);
+            if let Some(anchor) = mouse.anchor {
+                update_selection(state, mouse, anchor, (new_start, 0), &vp.wrapped, &vp.offsets);
+            }
+        } else {
+            // Auto-scroll down (towards newer content)
+            if state.scroll_up > 0 {
+                state.scroll_up -= 1;
+            }
+            // Extend selection to bottom of viewport
+            let new_start = max_scroll.saturating_sub(state.scroll_up as usize);
+            let bottom_row = new_start + vp.log_inner.height as usize;
+            if let Some(anchor) = mouse.anchor {
+                update_selection(state, mouse, anchor, (bottom_row, usize::MAX), &vp.wrapped, &vp.offsets);
+            }
+        }
+    }
+
+    /// Build this frame's builtin widgets (log, scrollbar, input line) and
+    /// return the cursor position. Also refreshes the viewport cache used
+    /// by mouse handling.
+    pub fn push_widgets(
+        &mut self,
+        widgets: &mut Vec<WidgetEntry>,
+        area: ratatui::layout::Rect,
+        blink_on: bool,
+    ) -> (u16, u16) {
+        use ratatui::{
+            layout::{Constraint, Direction, Layout},
+            text::{Line, Span},
+            widgets::{Block, Borders, Paragraph, ScrollbarState},
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(3)])
+            .split(area);
+
+        let log_area = chunks[0];
+        let log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+        let log_height = log_inner.height as usize;
+        let inner_width = log_inner.width as usize;
+
+        // Pre-wrap log lines, remembering each row's offset into its
+        // original line (content coordinates for rectangular selection).
+        let mut wrapped: Vec<String> = Vec::with_capacity(self.state.log_lines.len());
+        let mut offsets: Vec<usize> = Vec::with_capacity(self.state.log_lines.len());
+        for s in &self.state.log_lines {
+            let clean = s.rsplit_once('\r').map(|(_, last)| last).unwrap_or(s);
+            let clean = clean.replace('\t', "    ");
+            for (row, off) in wrap_with_offsets(&clean, inner_width, "↪ ") {
+                wrapped.push(row);
+                offsets.push(off);
+            }
+        }
+
+        let total_rows = wrapped.len();
+        let max_scroll = total_rows.saturating_sub(log_height);
+        self.state.scroll_up = (self.state.scroll_up as usize).min(max_scroll) as u16;
+
+        let title = if self.state.scroll_up > 0 {
+            format!("Log (\u{2191}{} rows)", self.state.scroll_up)
+        } else {
+            "Log".to_string()
+        };
+
+        let start = total_rows.saturating_sub(log_height).saturating_sub(self.state.scroll_up as usize);
+        let visible: Vec<String> = if total_rows > 0 { wrapped[start..].to_vec() } else { vec![] };
+
+        self.vp = Some(ViewportCache {
+            log_area,
+            log_inner,
+            viewport_start: start,
+            total_wrapped: total_rows,
+            wrapped: wrapped.clone(),
+            offsets: offsets.clone(),
+        });
+
+        widgets.push(WidgetEntry {
+            name: WIDGET_LOG,
+            widget: Box::new(LogWidget {
+                lines: visible,
+                selection: self.state.selection,
+                viewport_start: start,
+                rect: self.state.selection_rect,
+                offsets: offsets.clone(),
+                title: title.clone(),
+            }),
+            // The whole log box (border included) participates in
+            // stacking; LogWidget renders its own chrome.
+            area: log_area,
+        });
+
+        // The scrollbar is part of the builtin layer's widget stack — it
+        // rises with the log instead of always drawing on top.
+        let sb_scroll = max_scroll.saturating_sub(self.state.scroll_up as usize);
+        widgets.push(WidgetEntry {
+            name: WIDGET_SCROLLBAR,
+            widget: Box::new(ScrollbarWidget {
+                state: ScrollbarState::new(max_scroll + 1)
+                    .position(sb_scroll)
+                    .viewport_content_length(log_height),
+            }),
+            // Only the column the scrollbar actually paints, so the
+            // builtin group's backdrops do not erase the log content.
+            area: ratatui::layout::Rect::new(
+                log_area.right().saturating_sub(1),
+                log_area.y + 1,
+                1,
+                log_area.height.saturating_sub(2),
+            ),
+        });
+
+        let prompt = "> ";
+        let input_area = chunks[1];
+        let (confirmed_part, ghost) = split_confirmed(self.input.value(), self.completion.confirmed);
+        let input_line = if ghost.is_empty() {
+            Line::from(format!("{prompt}{confirmed_part}"))
+        } else {
+            // The unconfirmed tail flashes: alternating between hidden and
+            // emphasized, toggled by the blink driver in the loop.
+            let ghost_style = if blink_on {
+                ratatui::style::Style::new().add_modifier(ratatui::style::Modifier::HIDDEN)
+            } else {
+                ratatui::style::Style::new().add_modifier(ratatui::style::Modifier::REVERSED)
+            };
+            Line::from(vec![
+                Span::raw(format!("{prompt}{confirmed_part}")),
+                Span::styled(ghost.to_string(), ghost_style),
+            ])
+        };
+        widgets.push(WidgetEntry {
+            name: WIDGET_INPUT,
+            widget: Box::new(
+                Paragraph::new(input_line)
+                    .block(Block::default().borders(Borders::ALL).title("Input")),
+            ),
+            area: input_area,
+        });
+
+        (
+            input_area.x + 1 + prompt.len() as u16 + self.input.visual_cursor() as u16,
+            input_area.y + 1,
+        )
+    }
+}
+
 fn tui_loop<B>(
     terminal: &mut ratatui::Terminal<B>,
-    state: &mut TuiState,
-    input: &mut tui_input::Input,
-    socket: &Path,
-    protocols: &[Protocol],
+    builtin: &std::cell::RefCell<BuiltinTui<'_>>,
     hooks: &mut TuiHooks<'_>,
-    mouse: &mut MouseState,
 ) -> Result<(), String>
 where
     B: ratatui::backend::Backend,
 {
-    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-    use ratatui::{
-        layout::{Constraint, Direction, Layout},
-        widgets::{Block, Borders, Paragraph, ScrollbarState},
-    };
-    use tui_input::backend::crossterm::EventHandler;
+    use crossterm::event::{self};
 
-    let mut vp: Option<ViewportCache> = None;
-    let mut completion = CompletionState::default();
     let mut blink_on = true;
     let mut last_blink = Instant::now();
 
@@ -657,284 +1001,35 @@ where
             blink_on = !blink_on;
         }
         terminal.draw(|f| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(3), Constraint::Length(3)])
-                .split(f.area());
-
-            let log_area = chunks[0];
-            let log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
-            let log_height = log_inner.height as usize;
-            let inner_width = log_inner.width as usize;
-
-            // Pre-wrap log lines, remembering each row's offset into its
-            // original line (content coordinates for rectangular selection).
-            let mut wrapped: Vec<String> = Vec::with_capacity(state.log_lines.len());
-            let mut offsets: Vec<usize> = Vec::with_capacity(state.log_lines.len());
-            for s in &state.log_lines {
-                let clean = s.rsplit_once('\r').map(|(_, last)| last).unwrap_or(s);
-                let clean = clean.replace('\t', "    ");
-                for (row, off) in wrap_with_offsets(&clean, inner_width, "↪ ") {
-                    wrapped.push(row);
-                    offsets.push(off);
-                }
-            }
-
-            let total_rows = wrapped.len();
-            let max_scroll = total_rows.saturating_sub(log_height);
-            state.scroll_up = (state.scroll_up as usize).min(max_scroll) as u16;
-
-            let title = if state.scroll_up > 0 {
-                format!("Log (\u{2191}{} rows)", state.scroll_up)
-            } else {
-                "Log".to_string()
-            };
-
-            let start = total_rows.saturating_sub(log_height).saturating_sub(state.scroll_up as usize);
-            let visible: Vec<String> = if total_rows > 0 { wrapped[start..].to_vec() } else { vec![] };
-
-            vp = Some(ViewportCache {
-                log_area,
-                log_inner,
-                viewport_start: start,
-                total_wrapped: total_rows,
-                wrapped: wrapped.clone(),
-                offsets: offsets.clone(),
-            });
-
             let mut widgets: Vec<WidgetEntry> = Vec::new();
-
-            widgets.push(WidgetEntry {
-                name: WIDGET_LOG,
-                widget: Box::new(LogWidget {
-                    lines: visible,
-                    selection: state.selection,
-                    viewport_start: start,
-                    rect: state.selection_rect,
-                    offsets: offsets.clone(),
-                    title: title.clone(),
-                }),
-                // The whole log box (border included) participates in
-                // stacking; LogWidget renders its own chrome.
-                area: log_area,
-            });
-
-            // The scrollbar is part of the builtin layer's widget stack —
-            // it rises with the log instead of always drawing on top.
-            let sb_scroll = max_scroll.saturating_sub(state.scroll_up as usize);
-            widgets.push(WidgetEntry {
-                name: WIDGET_SCROLLBAR,
-                widget: Box::new(ScrollbarWidget {
-                    state: ScrollbarState::new(max_scroll + 1)
-                        .position(sb_scroll)
-                        .viewport_content_length(log_height),
-                }),
-                // Only the column the scrollbar actually paints, so the
-                // builtin group's backdrops do not erase the log content.
-                area: ratatui::layout::Rect::new(
-                    log_area.right().saturating_sub(1),
-                    log_area.y + 1,
-                    1,
-                    log_area.height.saturating_sub(2),
-                ),
-            });
-
-            let prompt = "> ";
-            let input_area = chunks[1];
-            let (confirmed_part, ghost) = split_confirmed(input.value(), completion.confirmed);
-            let input_line = if ghost.is_empty() {
-                ratatui::text::Line::from(format!("{prompt}{confirmed_part}"))
-            } else {
-                // The unconfirmed tail flashes: alternating between hidden and
-                // emphasized, toggled by the blink driver above.
-                let ghost_style = if blink_on {
-                    ratatui::style::Style::new().add_modifier(ratatui::style::Modifier::HIDDEN)
-                } else {
-                    ratatui::style::Style::new().add_modifier(ratatui::style::Modifier::REVERSED)
-                };
-                ratatui::text::Line::from(vec![
-                    ratatui::text::Span::raw(format!("{prompt}{confirmed_part}")),
-                    ratatui::text::Span::styled(ghost.to_string(), ghost_style),
-                ])
-            };
-            widgets.push(WidgetEntry {
-                name: WIDGET_INPUT,
-                widget: Box::new(
-                    Paragraph::new(input_line)
-                        .block(Block::default().borders(Borders::ALL).title("Input")),
-                ),
-                area: input_area,
-            });
-
+            let cursor =
+                builtin.borrow_mut().push_widgets(&mut widgets, f.area(), blink_on);
             (hooks.on_overlay)(&mut widgets);
-
             for entry in &widgets {
                 entry.widget.render_ref(entry.area, f.buffer_mut());
             }
-
-            f.set_cursor_position((
-                input_area.x + 1 + prompt.len() as u16 + input.visual_cursor() as u16,
-                input_area.y + 1,
-            ));
+            f.set_cursor_position(cursor);
         }).map_err(|e| e.to_string())?;
 
-        // Use shorter poll when auto-scrolling for smooth UX
-        let poll_ms = if mouse.auto_scroll.is_some() { 30 } else { 100 };
+        let poll_ms = builtin.borrow().poll_ms();
 
         if event::poll(Duration::from_millis(poll_ms)).map_err(|e| e.to_string())? {
             let ev = event::read().map_err(|e| e.to_string())?;
 
             // Event hook: swallowing an event skips the builtin handling.
             if (hooks.on_event)(&ev) {
+                if builtin.borrow().exit_requested() {
+                    return Ok(());
+                }
                 continue;
             }
 
-            match ev {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    // Any key other than Tab confirms the whole input line
-                    // (including a flashing, unconfirmed suggestion tail).
-                    // Esc is the other exception: it DELETES the tail instead
-                    // of confirming it, so it must not pass the gate first.
-                    if key.code != KeyCode::Tab && key.code != KeyCode::Esc {
-                        confirm_all(input, &mut completion);
-                    }
-                    match key.code {
-                        KeyCode::PageUp => { state.scroll_up = state.scroll_up.saturating_add(5); continue; }
-                        KeyCode::PageDown => { state.scroll_up = state.scroll_up.saturating_sub(5); continue; }
-                        KeyCode::Home => { state.scroll_up = u16::MAX; continue; }
-                        KeyCode::End => { state.scroll_up = 0; continue; }
-                        KeyCode::Up if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            state.scroll_up = state.scroll_up.saturating_add(1); continue;
-                        }
-                        KeyCode::Down if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            state.scroll_up = state.scroll_up.saturating_sub(1); continue;
-                        }
-                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) && input.value().is_empty() => {
-                            return Ok(());
-                        }
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            input.reset(); state.history_idx = None;
-                            confirm_all(input, &mut completion);
-                            continue;
-                        }
-                        KeyCode::Esc => {
-                            esc_unconfirmed(input, &mut completion);
-                            continue;
-                        }
-                        KeyCode::Tab => {
-                            tab_complete(input, &mut completion, protocols);
-                            continue;
-                        }
-                        KeyCode::Enter => {
-                            let line = input.value().to_string();
-                            input.reset();
-                            confirm_all(input, &mut completion);
-                            state.history_idx = None;
-                            let trimmed = line.trim();
-                            if trimmed.is_empty() { continue; }
-                            if trimmed == "exit" || trimmed == "quit" { return Ok(()); }
-                            if trimmed == "help" {
-                                state.log_lines.push("> help".into());
-                                state.log_lines.push("COMMANDS:".into());
-                                for p in protocols {
-                                    state.log_lines.push(format!("  {:<12} {}", p.name, p.help));
-                                }
-                                state.scroll_up = 0;
-                                state.selection = None; // Clear on new output
-                                continue;
-                            }
-
-                            state.history.push(line.clone());
-                            state.log_lines.push(format!("> {trimmed}"));
-                            state.scroll_up = 0;
-                            state.selection = None; // Clear on new output
-
-                            let (cmd_name, args) = match trimmed.split_once(' ') {
-                                Some((n, r)) => (n, r),
-                                None => (trimmed, ""),
-                            };
-
-                            let proto = match protocols.iter().find(|p| p.name == cmd_name) {
-                                Some(p) => p,
-                                None => {
-                                    state.log_lines.push(format!("Unknown: '{cmd_name}'"));
-                                    continue;
-                                }
-                            };
-
-                            match execute_command(proto, args, socket) {
-                                Ok(output_lines) => state.log_lines.extend(output_lines),
-                                Err(e) => state.log_lines.push(format!("Error: {e}")),
-                            }
-                        }
-                        KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            if !state.history.is_empty() {
-                                state.history_idx = Some(match state.history_idx {
-                                    Some(0) => 0,
-                                    Some(i) => i - 1,
-                                    None => state.history.len() - 1,
-                                });
-                                *input = tui_input::Input::new(state.history[state.history_idx.unwrap()].clone());
-                                confirm_all(input, &mut completion);
-                            }
-                        }
-                        KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            match state.history_idx {
-                                Some(i) if i + 1 < state.history.len() => {
-                                    let new_idx = i + 1;
-                                    state.history_idx = Some(new_idx);
-                                    *input = tui_input::Input::new(state.history[new_idx].clone());
-                                    confirm_all(input, &mut completion);
-                                }
-                                _ => { state.history_idx = None; input.reset(); }
-                            }
-                        }
-                        _ => {
-                            let _ = input.handle_event(&Event::Key(key));
-                            // The just-inserted edit is confirmed too: the
-                            // boundary must never lag the last typed char.
-                            confirm_all(input, &mut completion);
-                        }
-                    }
-                }
-                Event::Mouse(m) => {
-                    if let Some(ref vp) = vp {
-                        handle_mouse_event(m, state, mouse, vp);
-                    }
-                }
-                _ => {}
+            if builtin.borrow_mut().handle_event(&ev) && builtin.borrow().exit_requested() {
+                return Ok(());
             }
         } else {
             // Poll timeout: handle auto-scroll during drag
-            if let (Some(ref vp), Some(scroll_up_dir)) = (&vp, mouse.auto_scroll) {
-                if mouse.selecting {
-                    let max_scroll = vp.total_wrapped.saturating_sub(vp.log_inner.height as usize);
-                    if scroll_up_dir {
-                        // Auto-scroll up (towards older content)
-                        if (state.scroll_up as usize) < max_scroll {
-                            state.scroll_up += 1;
-                        }
-                        // Extend selection to top of viewport
-                        let new_start = vp.total_wrapped.saturating_sub(vp.log_inner.height as usize)
-                            .saturating_sub(state.scroll_up as usize);
-                        if let Some(anchor) = mouse.anchor {
-                            update_selection(state, mouse, anchor, (new_start, 0), &vp.wrapped, &vp.offsets);
-                        }
-                    } else {
-                        // Auto-scroll down (towards newer content)
-                        if state.scroll_up > 0 {
-                            state.scroll_up -= 1;
-                        }
-                        // Extend selection to bottom of viewport
-                        let new_start = vp.total_wrapped.saturating_sub(vp.log_inner.height as usize)
-                            .saturating_sub(state.scroll_up as usize);
-                        let bottom_row = new_start + vp.log_inner.height as usize;
-                        if let Some(anchor) = mouse.anchor {
-                            update_selection(state, mouse, anchor, (bottom_row, usize::MAX), &vp.wrapped, &vp.offsets);
-                        }
-                    }
-                }
-            }
+            builtin.borrow_mut().on_poll_timeout();
         }
     }
 }

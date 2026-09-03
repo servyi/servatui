@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "servatui-display"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -514,7 +514,7 @@ dependencies = [
 
 [[package]]
 name = "servyi-servatui"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "base64",
  "crossterm",

@@ -69,7 +69,9 @@
 //! layer is offered keys first (and fire [`DisplayLayer::on_active`] on
 //! the newly focused layer).
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crossterm::event::Event;
 use ratatui::layout::Rect;
@@ -210,9 +212,9 @@ pub fn palette_for(color_count: usize) -> Vec<Color> {
     palette
 }
 
-struct LayerSlot {
+struct LayerSlot<'a> {
     id: LayerId,
-    layer: Box<dyn DisplayLayer>,
+    layer: Box<dyn DisplayLayer + 'a>,
     priority: u64,
     /// Insertion order — stable tie-break for the priority sort.
     seq: u64,
@@ -220,9 +222,9 @@ struct LayerSlot {
 }
 
 /// The window manager: layer list, priorities, ownership, routing.
-pub struct Display {
+pub struct Display<'a> {
     /// Sorted ascending by (priority, seq) at the start of every frame.
-    slots: Vec<LayerSlot>,
+    slots: Vec<LayerSlot<'a>>,
     next_id: u64,
     palette: Vec<Color>,
     grabbed: Option<LayerId>,
@@ -231,6 +233,9 @@ pub struct Display {
     taskbar: Vec<(LayerId, Rect)>,
     terminal_area: Rect,
     builtin_id: LayerId,
+    /// The shared builtin TUI, attached by [`Display::run`] so the builtin
+    /// layer handles events through the very state the loop renders.
+    builtin_tui: Option<Rc<RefCell<servyi_servatui::tui::BuiltinTui<'a>>>>,
     /// Stable taskbar slot per layer; freed slots are recycled.
     slot_of: HashMap<LayerId, usize>,
     free_slots: Vec<usize>,
@@ -257,17 +262,32 @@ impl ratatui::widgets::WidgetRef for LayerBackdrop {
     }
 }
 
-impl Default for Display {
+impl Default for Display<'_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-struct BuiltinLayer;
+/// The builtin layer: drives the SHARED [`BuiltinTui`] (log, input line,
+/// scrollbar and all their behavior) owned by the event loop. Without an
+/// attached instance it passes everything, and the core handles events on
+/// fall-through — the headless-test configuration.
+struct BuiltinLayer<'a> {
+    tui: Option<Rc<RefCell<servyi_servatui::tui::BuiltinTui<'a>>>>,
+}
 
-impl DisplayLayer for BuiltinLayer {
+impl DisplayLayer for BuiltinLayer<'_> {
     fn on_overlay(&mut self, _ctx: &mut LayerCtx, _widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         StackIntent::Keep
+    }
+
+    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
+        let Some(tui) = &self.tui else { return EventResult::Pass };
+        if tui.borrow_mut().handle_event(ev) {
+            EventResult::Swallow
+        } else {
+            EventResult::Pass
+        }
     }
 }
 
@@ -279,7 +299,7 @@ impl DisplayLayer for NoopLayer {
     }
 }
 
-impl Display {
+impl<'a> Display<'a> {
     /// New display with the palette for the detected terminal color count.
     pub fn new() -> Self {
         Self::with_palette(palette_for(detect_color_count()))
@@ -291,7 +311,7 @@ impl Display {
         Self {
             slots: vec![LayerSlot {
                 id: builtin_id,
-                layer: Box::new(BuiltinLayer),
+                layer: Box::new(BuiltinLayer { tui: None }),
                 priority: 0,
                 seq: 0,
                 label: '*',
@@ -304,9 +324,20 @@ impl Display {
             taskbar: Vec::new(),
             terminal_area: Rect::new(0, 0, 80, 24),
             builtin_id,
+            builtin_tui: None,
             slot_of: HashMap::from([(builtin_id, 0)]),
             free_slots: Vec::new(),
             next_slot: 1,
+        }
+    }
+
+    /// Attach the shared builtin TUI (done automatically by
+    /// [`Display::run`]): from then on the builtin layer handles events
+    /// through the same state the event loop renders.
+    pub fn attach_builtin(&mut self, tui: Rc<RefCell<servyi_servatui::tui::BuiltinTui<'a>>>) {
+        self.builtin_tui = Some(tui.clone());
+        if let Some(slot) = self.slots.iter_mut().find(|s| s.id == self.builtin_id) {
+            slot.layer = Box::new(BuiltinLayer { tui: Some(tui) });
         }
     }
 
@@ -334,7 +365,7 @@ impl Display {
     }
 
     /// Remove a layer (never the builtin layer).
-    pub fn remove_layer(&mut self, id: LayerId) -> Option<Box<dyn DisplayLayer>> {
+    pub fn remove_layer(&mut self, id: LayerId) -> Option<Box<dyn DisplayLayer + 'a>> {
         if id == self.builtin_id {
             return None;
         }
@@ -722,13 +753,10 @@ impl Display {
             return false;
         }
 
-        // Keys / resize / focus: if the builtin layer is topmost, the core's
-        // builtin handling (the input line) is the focused target — fall
-        // straight through so layers below cannot intercept keystrokes.
-        if self.slots.last().map(|s| s.id) == Some(self.builtin_id) {
-            return false;
-        }
-        // Offered to every layer, topmost first.
+        // Keys / resize / focus: offered to every layer, topmost first.
+        // The builtin layer is no special case — when it is topmost (or the
+        // only layer), its own on_event handles keystrokes through the
+        // shared BuiltinTui and swallows them.
         for i in (0..self.slots.len()).rev() {
             if self.deliver(self.slots[i].id, ev) == EventResult::Swallow {
                 return true;
@@ -737,12 +765,23 @@ impl Display {
         false
     }
 
-    /// Run this display as the TUI client over servatui's event hook.
-    pub fn run(self, socket: &std::path::Path, protocols: &[servyi_servatui::Protocol]) -> Result<(), String> {
-        let display = std::cell::RefCell::new(self);
-        servyi_servatui::run_tui_with_events(
-            socket,
-            protocols,
+    /// Run this display as the TUI client: creates the shared
+    /// [`BuiltinTui`], attaches it to the builtin layer (so the builtin
+    /// becomes a completely ordinary layer — its events are handled inside
+    /// `on_event`, with no router special cases), and drives the loop.
+    pub fn run(
+        self,
+        socket: &'a std::path::Path,
+        protocols: &'a [servyi_servatui::Protocol],
+    ) -> Result<(), String> {
+        let builtin = Rc::new(RefCell::new(servyi_servatui::tui::BuiltinTui::new(
+            socket, protocols,
+        )));
+        let mut display = self;
+        display.attach_builtin(builtin.clone());
+        let display = RefCell::new(display);
+        servyi_servatui::tui::run_tui_managed(
+            builtin,
             |widgets| display.borrow_mut().frame(widgets),
             |ev| display.borrow_mut().route_event(ev),
         )

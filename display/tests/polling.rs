@@ -129,29 +129,35 @@ fn poll_popup_appears_acknowledges_and_reappears() {
 
     let mut display = Display::with_palette(vec![ratatui::style::Color::Blue]);
     let layer_id = display.add_layer(Box::new(EagerPollLayer { socket: socket.clone(), numbers: Vec::new(), seen: 0 }));
+    // Attach a real builtin TUI (as Display::run does).
+    display.attach_builtin(std::rc::Rc::new(std::cell::RefCell::new(
+        servyi_servatui::tui::BuiltinTui::new(&socket, &[]),
+    )));
 
     // First poll: one unseen number -> popup appears.
     let mut frame = builtin_frame();
     display.frame(&mut frame);
     has_popup(&frame).expect("unseen number must open the popup");
 
-    // A click OUTSIDE the popup falls through (not acknowledged by stray
-    // clicks elsewhere) — and focuses the builtin layer (click-to-focus).
+    // A click OUTSIDE the popup is consumed by the builtin layer (its own
+    // log handling runs; the popup below is not acknowledged) and focuses
+    // the builtin (click-to-focus).
     let stray = Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 5,
         row: 15,
         modifiers: KeyModifiers::NONE,
     });
-    assert!(!display.route_event(&stray), "click outside popup must fall through");
+    assert!(display.route_event(&stray), "builtin layer consumes the stray click");
+    assert_eq!(display.topmost(), Some(servatui_display::LayerId::BUILTIN));
     let mut frame = builtin_frame();
     display.frame(&mut frame);
     assert!(has_popup(&frame).is_some(), "stray click must not acknowledge");
 
-    // With the builtin focused, keystrokes go to the core's input line:
-    // Esc no longer reaches the popup below.
+    // With the builtin focused, Esc is consumed by the BUILTIN layer
+    // (it deletes the unconfirmed input tail) and never reaches the popup.
     let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!display.route_event(&esc), "builtin topmost: Esc goes to the core");
+    assert!(display.route_event(&esc), "builtin layer consumes Esc");
     let mut frame = builtin_frame();
     display.frame(&mut frame);
     assert!(has_popup(&frame).is_some(), "Esc with builtin focused must not acknowledge");
