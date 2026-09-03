@@ -33,12 +33,14 @@
 //! - **Shift+Tab** is system-reserved: it rotates activation through all
 //!   layers, stepping down the stack and wrapping around.
 //! - A press on a taskbar button activates that layer.
-//! - A press activates the topmost layer whose area contains the click —
-//!   **click-to-focus**, so clicking the log/input activates the builtin
-//!   layer even though the event then falls through to the core. A layer
-//!   that swallows a press becomes active (priority = max + 1) and grabs
-//!   the pointer: subsequent drags and the release are delivered to it
-//!   exclusively.
+//! - Mouse events stop at the **visual occupant**: the topmost layer whose
+//!   area contains the point gets the event and lower layers never see it
+//!   (a click on a popup covered by the builtin belongs to the builtin). A
+//!   layer that swallows a press becomes active (priority = max + 1) and
+//!   grabs the pointer: subsequent drags and the release are delivered to
+//!   it exclusively. If the occupant passes a press, it is still
+//!   activated (**click-to-focus**) and the event falls through to the
+//!   core — which is how clicking the log/input activates the builtin.
 //! - Other mouse events hit-test topmost-first through the layers' owned
 //!   widget areas; keys, resize and focus events are offered topmost-first
 //!   to every layer (fall-through).
@@ -650,14 +652,14 @@ impl Display {
             }
         }
 
-        // Mouse events: hit-test through owned areas, topmost first. A
-        // press focuses the topmost hit layer even when nobody swallows
-        // (click-to-focus) — that is how clicking the log/input activates
-        // the builtin layer — while the event still falls through to the
-        // core so the builtin handling keeps working.
+        // Mouse events: the topmost layer whose area contains the click is
+        // the VISUAL OCCUPANT of that point — it gets the event and lower
+        // layers never see it. If it swallows, a press also activates +
+        // grabs it; if it passes, a press still focuses it (click-to-focus)
+        // and the event falls through to the core — which is how clicking
+        // the log/input activates the builtin layer.
         if let Event::Mouse(m) = ev {
             let is_down = matches!(m.kind, MouseEventKind::Down(_));
-            let mut first_hit: Option<LayerId> = None;
             for i in (0..self.slots.len()).rev() {
                 let id = self.slots[i].id;
                 let hit = self
@@ -667,9 +669,6 @@ impl Display {
                 if !hit {
                     continue;
                 }
-                if first_hit.is_none() {
-                    first_hit = Some(id);
-                }
                 if self.deliver(id, ev) == EventResult::Swallow {
                     if is_down {
                         self.activate(id);
@@ -677,11 +676,10 @@ impl Display {
                     }
                     return true;
                 }
-            }
-            if is_down {
-                if let Some(id) = first_hit {
+                if is_down {
                     self.activate(id);
                 }
+                return false;
             }
             return false;
         }
