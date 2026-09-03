@@ -1010,7 +1010,10 @@ fn tab_complete(input: &mut Input, comp: &mut CompletionState, protocols: &[Prot
     let idx = comp.index.map(|i| (i + 1) % n).unwrap_or(0);
     comp.index = Some(idx);
     let suggestion = options[idx].clone();
-    *input = Input::new(suggestion).with_cursor(comp.confirmed);
+    // Apply the suggestion with the cursor at its end (ready to keep
+    // typing); the tail before the cursor stays unconfirmed/flashing and
+    // repeated Tabs keep cycling from the same confirmed base.
+    *input = Input::new(suggestion);
 }
 
 /// Update selection based on anchor + current position.
