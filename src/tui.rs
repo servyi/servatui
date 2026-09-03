@@ -1361,7 +1361,7 @@ mod tests {
         tab_complete(&mut input, &mut comp, &protocols);
         assert_eq!(input.value(), "lorem");
         assert_eq!(comp.confirmed, 2, "a suggestion must NOT be confirmed");
-        assert_eq!(input.cursor(), 2, "cursor stays at the confirmed boundary");
+        assert_eq!(input.cursor(), 5, "cursor moves to the end of the inserted string");
     }
 
     #[test]
