@@ -9,6 +9,7 @@ description = "Window-manager layers for servatui TUIs: priorities, activation, 
 servyi-servatui = { path = ".." }
 ratatui = { version = "0.28", features = ["unstable-widget-ref"] }
 crossterm = "0.28"
+serde_json = "1"
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
