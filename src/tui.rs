@@ -22,6 +22,24 @@ pub const WIDGET_LOG: &str = "servatui.log";
 pub const WIDGET_INPUT: &str = "servatui.input";
 pub const WIDGET_SCROLLBAR: &str = "servatui.scrollbar";
 
+/// The scrollbar as a `WidgetRef` entry so it can live in the widget vec
+/// (and therefore stack with the builtin layer instead of always drawing
+/// over everything). Clones its state per render — the stateful render
+/// API needs `&mut`.
+pub struct ScrollbarWidget {
+    pub state: ratatui::widgets::ScrollbarState,
+}
+
+impl ratatui::widgets::WidgetRef for ScrollbarWidget {
+    fn render_ref(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        use ratatui::widgets::{Scrollbar, ScrollbarOrientation, StatefulWidget as _};
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .render(area, buf, &mut self.state.clone());
+    }
+}
+
 /// A named, positioned widget in the render list.
 pub struct WidgetEntry {
     pub name: &'static str,
@@ -623,7 +641,7 @@ where
     use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
     use ratatui::{
         layout::{Constraint, Direction, Layout},
-        widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+        widgets::{Block, Borders, Paragraph, ScrollbarState},
     };
     use tui_input::backend::crossterm::EventHandler;
 
@@ -701,6 +719,26 @@ where
                 area: log_area,
             });
 
+            // The scrollbar is part of the builtin layer's widget stack —
+            // it rises with the log instead of always drawing on top.
+            let sb_scroll = max_scroll.saturating_sub(state.scroll_up as usize);
+            widgets.push(WidgetEntry {
+                name: WIDGET_SCROLLBAR,
+                widget: Box::new(ScrollbarWidget {
+                    state: ScrollbarState::new(max_scroll + 1)
+                        .position(sb_scroll)
+                        .viewport_content_length(log_height),
+                }),
+                // Only the column the scrollbar actually paints, so the
+                // builtin group's backdrops do not erase the log content.
+                area: ratatui::layout::Rect::new(
+                    log_area.right().saturating_sub(1),
+                    log_area.y + 1,
+                    1,
+                    log_area.height.saturating_sub(2),
+                ),
+            });
+
             let prompt = "> ";
             let input_area = chunks[1];
             let (confirmed_part, ghost) = split_confirmed(input.value(), completion.confirmed);
@@ -733,18 +771,6 @@ where
             for entry in &widgets {
                 entry.widget.render_ref(entry.area, f.buffer_mut());
             }
-
-            // Scrollbar
-            let sb_scroll = max_scroll.saturating_sub(state.scroll_up as usize);
-            let mut sb_state = ScrollbarState::new(max_scroll + 1)
-                .position(sb_scroll)
-                .viewport_content_length(log_height);
-            f.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                    .begin_symbol(None).end_symbol(None),
-                log_area.inner(ratatui::layout::Margin { horizontal: 0, vertical: 1 }),
-                &mut sb_state,
-            );
 
             f.set_cursor_position((
                 input_area.x + 1 + prompt.len() as u16 + input.visual_cursor() as u16,
@@ -2068,6 +2094,24 @@ mod tests {
         assert!(buf[(2, 0)].symbol() == "L", "title must render on the border");
         assert_eq!(buf[(1, 1)].symbol(), "h");
         assert_eq!(buf[(2, 1)].symbol(), "e");
+    }
+
+    #[test]
+    fn scrollbar_widget_paints_its_column() {
+        use ratatui::widgets::{ScrollbarState, WidgetRef as _};
+
+        let widget = ScrollbarWidget {
+            state: ScrollbarState::new(100).position(50).viewport_content_length(10),
+        };
+        let area = ratatui::layout::Rect::new(0, 0, 1, 10);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        widget.render_ref(area, &mut buf);
+        // The track/thumb glyphs occupy the single column.
+        assert!(
+            (0..area.height).all(|y| buf[(0, y)].symbol() != " "),
+            "scrollbar must paint its whole column, got {:?}",
+            (0..area.height).map(|y| buf[(0, y)].symbol()).collect::<Vec<_>>()
+        );
     }
 
 }

@@ -16,8 +16,11 @@
 //! and **[ DROP 1 ]** drops the oldest unseen number. Arrow keys move the
 //! button focus (shown reversed), Enter presses the focused button. A
 //! second popup with a notes textbox (`n` toggles, type, Enter commits,
-//! Esc discards) partially overlaps the numbers popup: clicking either
-//! raises it above the other, and Shift+Tab rotates the stacking.
+//! Esc discards; it also re-opens whenever its layer becomes active via
+//! the taskbar or Shift+Tab) partially overlaps the numbers popup:
+//! clicking either raises it above the other, and Shift+Tab rotates the
+//! stacking. The numbers layer hides its taskbar button while nothing
+//! is pending.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -126,6 +129,12 @@ impl DisplayLayer for NotesLayer {
         'T'
     }
 
+    /// Activating the layer (taskbar button, Shift+Tab, or a click on an
+    /// open popup) re-opens the textbox.
+    fn on_active(&mut self) {
+        self.open = true;
+    }
+
     fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         if !self.open {
                         return StackIntent::Keep;
@@ -222,6 +231,12 @@ fn button_row(focus: usize) -> Line<'static> {
 impl DisplayLayer for PollLayer {
     fn tab_label(&self) -> char {
         'N'
+    }
+
+    /// No taskbar button (and nothing clickable) while there is no popup —
+    /// the reserved slot means the button returns at the same position.
+    fn hide_when_empty(&self) -> bool {
+        true
     }
 
     fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
