@@ -483,6 +483,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "servatui-display"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "serde_json",
+ "servyi-servatui",
+]
+
+[[package]]
 name = "servatui-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -492,12 +502,13 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "servatui-display",
  "servyi-servatui",
 ]
 
 [[package]]
 name = "servyi-servatui"
-version = "0.6.0"
+version = "0.7.1"
 dependencies = [
  "base64",
  "crossterm",
@@ -505,6 +516,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "signal-hook",
  "textwrap",
  "tui-input",
 ]

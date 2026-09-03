@@ -214,7 +214,7 @@ fn taskbar_one_cell_per_layer_on_bottom_row_click_activates() {
 
     // Clicking a's cell (slot 1: x 38..=40) activates a.
     assert!(display.route_event(&down(39, 23)));
-    assert_eq!(display.topmost(), Some(ids[1]));
+    assert_eq!(display.topmost(), Some(ids[0]));
 
     // Clicking the builtin cell (slot 0: x 34..=36) activates builtin.
     assert!(display.route_event(&down(35, 23)));
@@ -430,7 +430,7 @@ fn backdrop_clears_content_and_is_not_interleaved_with_widgets() {
         e.widget.render_ref(e.area, &mut buf);
     }
     assert_eq!(buf[(2, 1)].symbol(), "A", "bottom layer visible outside B");
-    assert_eq!(buf[(6, 0)].symbol(), "B", "top widget content drawn");
+    assert_eq!(buf[(5, 0)].symbol(), "B", "top widget content drawn");
     assert_eq!(buf[(8, 1)].symbol(), " ", "backdrop must clear the A below");
     assert_eq!(buf[(8, 1)].bg, b_color);
     // The gap between B's two widgets belongs to no backdrop rect.
@@ -448,8 +448,13 @@ fn activating_builtin_brings_its_widgets_to_front() {
     let mut frame = builtin_frame();
     display.frame(&mut frame);
     let names: Vec<&'static str> = frame.iter().map(|w| w.name).collect();
-    assert_eq!(*names.last().unwrap(), WIDGET_INPUT, "activated builtin draws on top");
-    assert_eq!(names[names.len() - 2], WIDGET_LOG);
+    // The taskbar strip (one button per layer) is appended after everything;
+    // the builtin group itself must be the last widget group, drawn on top.
+    let n = names.len();
+    assert_eq!(names[n - 3], WIDGET_INPUT, "activated builtin draws on top");
+    assert_eq!(names[n - 4], WIDGET_LOG);
+    assert_eq!(names[n - 1], "display.taskbar");
+    assert_eq!(names[n - 2], "display.taskbar");
 }
 
 #[test]

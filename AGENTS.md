@@ -107,14 +107,19 @@ continuous id mapped onto a color palette (≤8 terminal colors: all of them;
 
 - **Frame** (`Display::frame`): sort by priority, collapse priorities to
   adjacent integers, run `on_overlay` in order (later = on top), attribute
-  new widget names to the adding layer, paint a colored underlay behind
-  every owned widget (builtin layer excluded), append the bottom-row
-  taskbar (one colored cell per layer, click to activate).
+  new widget names to the adding layer, regroup the vec so each layer's
+  widgets are consecutive in stack order (activating builtin brings
+  log/input to the front), insert one CLEARING backdrop rect per widget
+  before each non-builtin group (never interleaved with the widgets), and
+  append the bottom-row taskbar: 3-wide buttons, 1 space apart, centered,
+  at stable id-assigned slots recycled on removal.
 - **Routing** (`Display::route_event`): Shift+Tab is system-reserved
   (carousel rotation: each press raises the bottom-most layer); presses
   activate + grab the pointer (drags/release follow the grabber outside its
   areas); other mouse events hit-test topmost-first; keys/resize/focus are
-  offered topmost-first with fall-through; everything passed falls through
+  offered topmost-first with fall-through — unless the builtin layer is
+  topmost, in which case they fall straight through to the core's input
+  line so layers below cannot intercept; everything passed falls through
   to the builtin handling.
 
 **When changing routing or attribution logic:**
@@ -122,7 +127,7 @@ continuous id mapped onto a color palette (≤8 terminal colors: all of them;
 2. Commit "add failing test for bug X", then the fix
 3. `cargo test --workspace`, `cargo clippy --all-targets` (zero warnings)
 4. Re-run the `display` fuzz target (`fuzz/`, nightly): the invariants are
-   priorities-adjacent-after-collapse, one-taskbar-cell-per-layer, grab
+   priorities-adjacent-after-collapse, one-taskbar-button-per-layer, grab
    cleared on Up, grab holder is a live layer
 
 **Examples** (`cargo run -p servatui-display --example …`): `popup`

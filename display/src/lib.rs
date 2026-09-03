@@ -13,19 +13,24 @@
 //!    layers draw on top;
 //! 3. widgets appearing during a layer's call are attributed to that layer
 //!    (by name; the builtin widgets the core pushed beforehand are
-//!    attributed to the builtin layer);
-//! 4. before every owned widget, a rectangle of the layer's color is
-//!    painted underneath it (except the builtin layer, to keep the default
-//!    look);
-//! 5. a one-cell taskbar strip is appended on the bottom terminal row, one
-//!    colored cell per layer (including the builtin).
+//!    attributed to the builtin layer), and the vec is regrouped so each
+//!    layer's widgets are consecutive and the groups appear in stack
+//!    order — activating the builtin layer really brings the log/input to
+//!    the front;
+//! 4. before each non-builtin group, one backdrop rect per widget (never
+//!    interleaved with them) clears the cells and paints the layer color,
+//!    so lower layers cannot bleed through;
+//! 5. a taskbar strip is appended on the bottom terminal row: one
+//!    3-cells-wide button per layer (including the builtin), 1 space
+//!    between buttons, horizontally centered, at stable slot positions
+//!    assigned by id and recycled when layers are removed.
 //!
 //! # Event routing ([`Display::route_event`])
 //!
 //! Runs inside the event hook before servatui's builtin handling:
 //! - **Shift+Tab** is system-reserved: it rotates activation through all
 //!   layers, stepping down the stack and wrapping around.
-//! - A press on a taskbar cell activates that layer.
+//! - A press on a taskbar button activates that layer.
 //! - A layer that swallows a press becomes active (priority = max + 1) and
 //!   grabs the pointer: subsequent drags and the release are delivered to
 //!   it exclusively.
@@ -41,7 +46,7 @@ use crossterm::event::Event;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 use servyi_servatui::{WidgetEntry, WIDGET_INPUT};
 
 /// Opaque, continuous layer identity. User layer ids start at 1; 0 is the
@@ -165,6 +170,30 @@ pub struct Display {
     taskbar: Vec<(LayerId, Rect)>,
     terminal_area: Rect,
     builtin_id: LayerId,
+    /// Stable taskbar slot per layer; freed slots are recycled.
+    slot_of: HashMap<LayerId, usize>,
+    free_slots: Vec<usize>,
+    next_slot: usize,
+}
+
+/// The backdrop behind a layer's widget group: clears every cell in its
+/// area and paints the layer color. Unlike a styled `Block`, this resets
+/// symbols, so content from lower layers cannot bleed through.
+struct LayerBackdrop {
+    color: Color,
+}
+
+impl ratatui::widgets::WidgetRef for LayerBackdrop {
+    fn render_ref(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.reset();
+                    cell.set_bg(self.color);
+                }
+            }
+        }
+    }
 }
 
 impl Default for Display {
@@ -210,6 +239,9 @@ impl Display {
             taskbar: Vec::new(),
             terminal_area: Rect::new(0, 0, 80, 24),
             builtin_id,
+            slot_of: HashMap::from([(builtin_id, 0)]),
+            free_slots: Vec::new(),
+            next_slot: 1,
         }
     }
 
@@ -221,6 +253,16 @@ impl Display {
             '\0' => (b'a' as u64 + (self.next_id - 1) % 26) as u8 as char,
             c => c,
         };
+        // Stable taskbar slot: recycle a freed one if available.
+        let taskbar_slot = match self.free_slots.pop() {
+            Some(s) => s,
+            None => {
+                let s = self.next_slot;
+                self.next_slot += 1;
+                s
+            }
+        };
+        self.slot_of.insert(id, taskbar_slot);
         let priority = self.slots.iter().map(|s| s.priority).max().unwrap_or(0) + 1;
         self.slots.push(LayerSlot { id, layer, priority, seq: self.next_id, label });
         id
@@ -235,6 +277,9 @@ impl Display {
         let slot = self.slots.remove(idx);
         if self.grabbed == Some(id) {
             self.grabbed = None;
+        }
+        if let Some(taskbar_slot) = self.slot_of.remove(&id) {
+            self.free_slots.push(taskbar_slot);
         }
         self.owners.retain(|_, owner| *owner != id);
         self.cached_widgets.remove(&id);
@@ -352,27 +397,68 @@ impl Display {
             }
         }
 
-        // Inject colored underlays below every non-builtin-owned widget.
-        let mut decorated = Vec::with_capacity(widgets.len() * 2);
+        // Regroup the vec: each layer's widgets become consecutive, and the
+        // groups appear in stack order (bottom first). The builtin widgets
+        // the core pushed first therefore draw on top once the builtin
+        // layer is activated above user layers.
+        let mut groups: HashMap<LayerId, Vec<WidgetEntry>> = HashMap::new();
+        let mut appearance: Vec<LayerId> = Vec::new();
         for w in widgets.drain(..) {
-            let owner = self.owners.get(&w.name).copied();
-            if let Some(color) = owner.and_then(|o| self.layer_color(o)) {
-                decorated.push(WidgetEntry {
-                    name: "display.underlay",
-                    widget: Box::new(Block::default().style(Style::default().bg(color))),
-                    area: w.area,
-                });
+            let owner = self.owners.get(&w.name).copied().unwrap_or(self.builtin_id);
+            if !groups.contains_key(&owner) {
+                appearance.push(owner);
             }
-            decorated.push(w);
+            groups.entry(owner).or_default().push(w);
         }
+        let mut order: Vec<LayerId> =
+            self.slots.iter().map(|s| s.id).filter(|id| groups.contains_key(id)).collect();
+        for id in appearance {
+            if !order.contains(&id) {
+                order.push(id); // defensive: an owner without a live slot
+            }
+        }
+        for id in order {
+            if let Some(group) = groups.remove(&id) {
+                widgets.extend(group);
+            }
+        }
+
+        // One backdrop rect per widget of each non-builtin group, all
+        // inserted before the group's first widget — never interleaved with
+        // the widgets, so a layer's own overlapping widgets composite
+        // correctly. Backdrops clear the cells and paint the layer color.
+        let mut decorated = Vec::with_capacity(widgets.len() * 2);
+        let mut group: Vec<WidgetEntry> = Vec::new();
+        let mut group_owner: Option<LayerId> = None;
+        for w in widgets.drain(..) {
+            let owner = self.owners.get(&w.name).copied().unwrap_or(self.builtin_id);
+            if group_owner != Some(owner) {
+                self.flush_group(&mut decorated, &mut group, group_owner);
+                group_owner = Some(owner);
+            }
+            group.push(w);
+        }
+        self.flush_group(&mut decorated, &mut group, group_owner);
         *widgets = decorated;
 
-        // Taskbar: one cell per layer on the bottom terminal row.
+        // Taskbar: one button per layer on the bottom terminal row, at a
+        // STABLE slot position (assigned by id, recycled on removal — not
+        // the priority order), 3 cells wide with a 1-column gap, the strip
+        // centered horizontally. The topmost layer's button is bold.
         self.taskbar.clear();
         let row = self.terminal_area.bottom().saturating_sub(1);
+        let total_slots = self.slot_of.values().copied().max().map_or(0, |m| m + 1);
+        let strip_w = if total_slots == 0 {
+            0
+        } else {
+            (total_slots * 4 - 1) as u16 // n buttons * 3 + (n - 1) gaps
+        };
+        let start =
+            self.terminal_area.x + (self.terminal_area.width.saturating_sub(strip_w)) / 2;
         let n = self.slots.len();
         for (i, slot) in self.slots.iter().enumerate() {
-            let area = Rect::new(self.terminal_area.x + i as u16, row, 1, 1);
+            let s = self.slot_of.get(&slot.id).copied().unwrap_or(i) as u16;
+            let area = Rect::new(start + s * 4, row, 3, 1);
             let color = if slot.id == self.builtin_id {
                 Color::DarkGray
             } else {
@@ -384,11 +470,38 @@ impl Display {
             }
             widgets.push(WidgetEntry {
                 name: "display.taskbar",
-                widget: Box::new(Paragraph::new(Span::styled(slot.label.to_string(), style))),
+                widget: Box::new(Paragraph::new(Span::styled(
+                    format!("{:^3}", slot.label),
+                    style,
+                ))),
                 area,
             });
             self.taskbar.push((slot.id, area));
         }
+    }
+
+    /// Emit one backdrop rect per widget of the group (all before the
+    /// group's first widget), then the widgets themselves.
+    fn flush_group(
+        &self,
+        decorated: &mut Vec<WidgetEntry>,
+        group: &mut Vec<WidgetEntry>,
+        owner: Option<LayerId>,
+    ) {
+        if let Some(owner) = owner {
+            if owner != self.builtin_id {
+                if let Some(color) = self.layer_color(owner) {
+                    for w in group.iter() {
+                        decorated.push(WidgetEntry {
+                            name: "display.backdrop",
+                            widget: Box::new(LayerBackdrop { color }),
+                            area: w.area,
+                        });
+                    }
+                }
+            }
+        }
+        decorated.append(group);
     }
 
     /// Route one terminal event. Returns `true` to swallow it (servatui's
@@ -459,7 +572,13 @@ impl Display {
             return false;
         }
 
-        // Keys / resize / focus: offered to every layer, topmost first.
+        // Keys / resize / focus: if the builtin layer is topmost, the core's
+        // builtin handling (the input line) is the focused target — fall
+        // straight through so layers below cannot intercept keystrokes.
+        if self.slots.last().map(|s| s.id) == Some(self.builtin_id) {
+            return false;
+        }
+        // Offered to every layer, topmost first.
         for i in (0..self.slots.len()).rev() {
             if self.deliver(self.slots[i].id, ev) == EventResult::Swallow {
                 return true;
