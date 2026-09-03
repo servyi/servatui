@@ -725,3 +725,31 @@ fn raised_builtin_clears_lower_layers_behind_it() {
     assert_eq!(buf[(30, 10)].symbol(), " ", "raised builtin must erase the layer below");
     assert_eq!(buf[(30, 10)].bg, ratatui::style::Color::Reset);
 }
+
+#[test]
+fn clicks_stop_at_the_topmost_hit_layer() {
+    // With the builtin raised over a popup, clicking the popup's (now
+    // covered) area must NOT pull the popup to the front: the click
+    // visually belongs to the builtin, which passes it to the core —
+    // lower layers never see it.
+    let (mut display, ids) = display_with(vec![Toy::new("pop", rect(10, 5, 20, 10)).swallow_mouse()]);
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+
+    display.activate(LayerId::BUILTIN);
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    assert_eq!(display.topmost(), Some(LayerId::BUILTIN));
+
+    // Click where the covered popup sits.
+    assert!(!display.route_event(&down(15, 10)), "builtin passes, core handles");
+    assert_eq!(display.topmost(), Some(LayerId::BUILTIN), "covered popup must not be raised");
+    assert_eq!(display.grabbed(), None);
+
+    // Raising the popup back (taskbar: 2 slots, strip starts at
+    // (80-7)/2 = 36, popup button at x 40..42) restores its clicks.
+    assert!(display.route_event(&down(41, 23)));
+    assert_eq!(display.topmost(), Some(ids[0]));
+    assert!(display.route_event(&down(15, 10)));
+    assert_eq!(display.grabbed(), Some(ids[0]));
+}
