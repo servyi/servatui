@@ -687,8 +687,8 @@ impl<'a> Display<'a> {
         // stack (wrapping around), through all layers including the builtin.
         if let Event::Key(k) = ev {
             if k.kind == KeyEventKind::Press
-                && k.code == KeyCode::Tab
-                && k.modifiers.contains(KeyModifiers::SHIFT)
+                && (k.code == KeyCode::Tab && k.modifiers.contains(KeyModifiers::SHIFT)
+                    || k.code == KeyCode::BackTab)
             {
                 self.rotate();
                 return true;
