@@ -695,3 +695,29 @@ fn on_overlay_intents_move_layers_across_frames() {
     display.frame(&mut frame);
     assert_eq!(display.topmost(), Some(top));
 }
+
+#[test]
+fn raised_builtin_clears_lower_layers_behind_it() {
+    // A layer covering the log area sits below; raising the builtin must
+    // ERASE it (terminal-default background), not just draw text over it.
+    let mut display = Display::with_palette(palette_for(16));
+    display.add_layer(Box::new(FillLayer { name: "bg.fill", area: rect(0, 0, 80, 21) }));
+
+    let render = |display: &mut Display| {
+        let mut frame = builtin_frame();
+        display.frame(&mut frame);
+        let mut buf = ratatui::buffer::Buffer::empty(rect(0, 0, 80, 24));
+        for e in &frame {
+            e.widget.render_ref(e.area, &mut buf);
+        }
+        buf
+    };
+
+    let buf = render(&mut display);
+    assert_eq!(buf[(30, 10)].symbol(), "A", "bottom layer visible while builtin is at the bottom");
+
+    display.activate(LayerId::BUILTIN);
+    let buf = render(&mut display);
+    assert_eq!(buf[(30, 10)].symbol(), " ", "raised builtin must erase the layer below");
+    assert_eq!(buf[(30, 10)].bg, ratatui::style::Color::Reset);
+}

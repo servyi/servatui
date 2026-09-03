@@ -2029,4 +2029,29 @@ mod tests {
         assert_eq!(parse_terminal_size("100", "0"), None);
         assert_eq!(parse_terminal_size("0", "0"), None);
     }
+    #[test]
+    fn log_widget_owns_its_chrome() {
+        use ratatui::widgets::WidgetRef as _;
+
+        let widget = LogWidget {
+            lines: vec!["hello".to_string()],
+            selection: None,
+            viewport_start: 0,
+            rect: false,
+            offsets: vec![0],
+            title: " Log ".to_string(),
+        };
+        let area = ratatui::layout::Rect::new(0, 0, 20, 5);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        widget.render_ref(area, &mut buf);
+        // Border ring around the whole area …
+        assert_eq!(buf[(0, 0)].symbol(), "\u{250c}");
+        assert_eq!(buf[(10, 0)].symbol(), "\u{2500}");
+        assert_eq!(buf[(0, 2)].symbol(), "\u{2502}");
+        // … with the title on the top border and content offset inside.
+        assert!(buf[(2, 0)].symbol() == "L", "title must render on the border");
+        assert_eq!(buf[(1, 1)].symbol(), "h");
+        assert_eq!(buf[(2, 1)].symbol(), "e");
+    }
+
 }
