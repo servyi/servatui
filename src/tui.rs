@@ -492,6 +492,15 @@ impl ratatui::widgets::WidgetRef for LogWidget {
 }
 
 /// Run the TUI client without an overlay callback.
+///
+/// # Deprecated
+///
+/// To be removed after **October 26**. Use [`run_tui_with_events`] — or the
+/// `servatui-display` crate's `Display::run`, which builds on it — instead.
+#[deprecated(
+    since = "0.7.1",
+    note = "replaced by run_tui_with_events (or the servatui-display crate); removal scheduled after October 26"
+)]
 #[cfg(feature = "tui")]
 pub fn run_tui(socket: &Path, protocols: &[Protocol]) -> Result<(), String> {
     run_tui_with_overlay(socket, protocols, |_| {})

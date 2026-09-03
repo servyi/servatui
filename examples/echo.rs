@@ -50,13 +50,13 @@ fn main() {
         std::process::exit(1);
     };
 
-    let app = App::builder(&socket)
-        .version("0.1.0")
-        .protocol(echo_protocol())
-        .protocol(greet_protocol())
-        .build();
+    let protocols = vec![echo_protocol(), greet_protocol()];
 
     if args.len() >= 2 && args[1] == "serve" {
+        let app = App::builder(&socket)
+            .version("0.1.0")
+            .protocol_all(protocols)
+            .build();
         println!("Starting echo server on {socket}");
         if let Err(e) = app.run_server(std::sync::Arc::new(())) {
             eprintln!("Server error: {e}");
@@ -65,7 +65,7 @@ fn main() {
     } else {
         #[cfg(feature = "tui")]
         {
-            if let Err(e) = app.run_tui() {
+            if let Err(e) = servatui_display::Display::new().run(socket.as_ref(), &protocols) {
                 eprintln!("Client error: {e}");
                 std::process::exit(1);
             }

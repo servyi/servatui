@@ -1,6 +1,6 @@
 [package]
 name = "servyi-servatui"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 license = "MIT"
 description = "Generic server-client framework with TUI/CLI frontends. Define protocols with type-safe builder chains."
@@ -24,6 +24,7 @@ signal-hook = { version = "0.3", optional = true }
 libc = "0.2"
 
 [dev-dependencies]
+servatui-display = { path = "display" }
 tempfile = "3"
 servyi-ioprovider = { git = "https://github.com/servyi/ioprovider.git" }
 tokio = { version = "1", features = ["macros", "rt"] }

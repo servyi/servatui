@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "servyi-servatui"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "base64",
  "crossterm",
@@ -521,6 +521,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "servatui-display",
  "servyi-ioprovider",
  "signal-hook",
  "tempfile",

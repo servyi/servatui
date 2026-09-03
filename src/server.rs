@@ -189,9 +189,19 @@ impl App {
     }
 
     /// Run the TUI client. Blocks until user exits.
+    ///
+    /// # Deprecated
+    ///
+    /// To be removed after **October 26**. Use [`App::run_tui_with_events`]
+    /// — or the `servatui-display` crate's `Display::run` — instead.
+    #[deprecated(
+        since = "0.7.1",
+        note = "replaced by run_tui_with_events (or the servatui-display crate); removal scheduled after October 26"
+    )]
     #[cfg(feature = "tui")]
     pub fn run_tui(&self) -> Result<(), String> {
-        crate::tui::run_tui(&self.socket, &self.protocols)
+        // Same behavior as tui::run_tui, via the non-deprecated entry point.
+        crate::tui::run_tui_with_overlay(&self.socket, &self.protocols, |_| {})
     }
 
     /// Run the TUI client with an overlay callback.
