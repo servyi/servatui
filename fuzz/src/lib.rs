@@ -1125,6 +1125,7 @@ pub fn run_render_case(c: &RenderCase) {
         viewport_start: c.viewport_start as usize,
         rect: c.rect,
         offsets: vec![0; lines.len()],
+        title: String::new(),
     };
     let area = ratatui::layout::Rect::new(
         c.area_x as u16 % 80,

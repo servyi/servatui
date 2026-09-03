@@ -182,17 +182,17 @@ fn layer_widgets_get_colored_underlay_builtins_do_not() {
     assert_eq!(owner, ids[0]);
     assert_eq!(display.owner_of(WIDGET_LOG), Some(LayerId::BUILTIN));
 
-    // A backdrop entry is injected directly before the popup's group, but
-    // the builtin widgets get none (WIDGET_LOG is first in the vec, and no
-    // backdrop anywhere carries its area).
+    // The popup's backdrop sits directly before it, painted in the
+    // layer's color; the builtin group also gets a clearing backdrop, but
+    // the terminal-default one (Color::Reset), keeping the default look.
     let names: Vec<&'static str> = frame.iter().map(|w| w.name).collect();
     let popup_idx = names.iter().position(|n| *n == "popup").unwrap();
     assert_eq!(frame[popup_idx - 1].name, "display.backdrop");
     assert_eq!(frame[popup_idx - 1].area, rect(10, 5, 20, 10));
-    assert_eq!(frame[0].name, WIDGET_LOG);
-    assert!(!frame.iter().any(|w| {
-        w.name == "display.backdrop" && w.area == rect(0, 0, 80, 21)
-    }), "builtin log must not get a backdrop");
+    // Backdrops are per-widget, grouped before the builtin's widgets.
+    assert_eq!(frame[0].name, "display.backdrop");
+    assert_eq!(frame[1].name, "display.backdrop");
+    assert_eq!(frame[2].name, WIDGET_LOG);
 }
 
 #[test]
@@ -449,7 +449,11 @@ fn activating_builtin_brings_its_widgets_to_front() {
     let (mut display, _ids) = display_with(vec![Toy::new("a", rect(0, 0, 5, 5))]);
     let mut frame = builtin_frame();
     display.frame(&mut frame);
-    assert_eq!(frame[0].name, WIDGET_LOG, "builtin starts at the bottom");
+    // Builtin at the bottom: its group leads with the terminal-default
+    // clearing backdrops (one per widget), then the widgets.
+    assert_eq!(frame[0].name, "display.backdrop");
+    assert_eq!(frame[1].name, "display.backdrop");
+    assert_eq!(frame[2].name, WIDGET_LOG);
 
     display.activate(LayerId::BUILTIN);
     let mut frame = builtin_frame();

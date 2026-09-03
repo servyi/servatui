@@ -424,13 +424,27 @@ pub struct LogWidget {
     pub rect: bool,
     /// Per content row: char offset into its original line (content coords).
     pub offsets: Vec<usize>,
+    /// Border title (includes the scroll indicator).
+    pub title: String,
 }
 
 impl ratatui::widgets::WidgetRef for LogWidget {
     fn render_ref(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         use ratatui::style::{Color, Modifier, Style};
+        use ratatui::widgets::{Block, Borders, Clear, Widget as _};
 
         let gray = Style::default().fg(Color::DarkGray);
+
+        // The log owns its whole chrome — clear + bordered block — so the
+        // complete box participates in widget stacking: raising the builtin
+        // layer redraws border and content over lower layers.
+        Clear.render(area, buf);
+        Block::default()
+            .borders(Borders::ALL)
+            .title(self.title.as_str())
+            .render(area, buf);
+
+        let inner = area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
 
         // Selection in ordered form (top-left to bottom-right)
         let sel = self.selection.map(|(sr, sc, er, ec)| {
@@ -438,15 +452,15 @@ impl ratatui::widgets::WidgetRef for LogWidget {
         });
 
         for (row, line) in self.lines.iter().enumerate() {
-            if row >= area.height as usize { break; }
+            if row >= inner.height as usize { break; }
             let content_row = self.viewport_start + row;
             let is_cont = line.starts_with("↪ ");
-            let y = area.y + row as u16;
+            let y = inner.y + row as u16;
             let chars: Vec<char> = line.chars().collect();
 
             for (col, ch) in chars.iter().enumerate() {
-                if col >= area.width as usize { break; }
-                let x = area.x + col as u16;
+                if col >= inner.width as usize { break; }
+                let x = inner.x + col as u16;
 
                 // Check selection using content_row directly (no viewport translation needed)
                 let is_selected = match sel {
@@ -609,7 +623,7 @@ where
     use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
     use ratatui::{
         layout::{Constraint, Direction, Layout},
-        widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+        widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     };
     use tui_input::backend::crossterm::EventHandler;
 
@@ -670,9 +684,6 @@ where
                 offsets: offsets.clone(),
             });
 
-            f.render_widget(Clear, log_area);
-            f.render_widget(Block::default().borders(Borders::ALL).title(title), log_area);
-
             let mut widgets: Vec<WidgetEntry> = Vec::new();
 
             widgets.push(WidgetEntry {
@@ -683,8 +694,11 @@ where
                     viewport_start: start,
                     rect: state.selection_rect,
                     offsets: offsets.clone(),
+                    title: title.clone(),
                 }),
-                area: log_inner,
+                // The whole log box (border included) participates in
+                // stacking; LogWidget renders its own chrome.
+                area: log_area,
             });
 
             let prompt = "> ";
@@ -1718,8 +1732,10 @@ mod tests {
             viewport_start: 0,
             rect: true,
             offsets,
+            title: String::new(),
         };
-        let area = ratatui::layout::Rect::new(0, 0, 20, 5);
+        // LogWidget draws its own border, so content starts at (+1, +1).
+        let area = ratatui::layout::Rect::new(0, 0, 20, 7);
         let mut buf = ratatui::buffer::Buffer::empty(area);
         widget.render_ref(area, &mut buf);
         let rev = |x: u16, y: u16| {
@@ -1730,12 +1746,12 @@ mod tests {
                 .contains(ratatui::style::Modifier::REVERSED)
         };
         // Row 1 "↪ world": orig 6..9 → display cols 2,3,4 highlighted only.
-        assert!(rev(2, 1) && rev(4, 1));
-        assert!(!rev(5, 1) && !rev(6, 1));
+        assert!(rev(3, 2) && rev(5, 2));
+        assert!(!rev(6, 2) && !rev(7, 2));
         // Row 4 "↪ xyz": orig 6..9 covers all of "xyz" → cols 2,3,4.
-        assert!(rev(2, 4) && rev(4, 4));
+        assert!(rev(3, 5) && rev(5, 5));
         // Rows that don't reach orig col 6 ("hello", "short", "firmi").
-        assert!(!rev(0, 0) && !rev(0, 2) && !rev(0, 3));
+        assert!(!rev(1, 1) && !rev(1, 3) && !rev(1, 4));
     }
 
     // ── Bug 2 test: content fits within bordered area ─────────────

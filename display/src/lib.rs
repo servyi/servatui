@@ -18,9 +18,10 @@
 //!    layer's widgets are consecutive and the groups appear in stack
 //!    order — activating the builtin layer really brings the log/input to
 //!    the front;
-//! 4. before each non-builtin group, one backdrop rect per widget (never
-//!    interleaved with them) clears the cells and paints the layer color,
-//!    so lower layers cannot bleed through;
+//! 4. before each group, one backdrop rect per widget (never interleaved
+//!    with them) clears the cells and paints the layer color (the builtin
+//!    group clears to the terminal default), so lower layers cannot bleed
+//!    through — necessary now that the builtin can rise above others;
 //! 5. a taskbar strip is appended on the bottom terminal row: one
 //!    3-cells-wide button per layer (including the builtin), 1 space
 //!    between buttons, horizontally centered, at stable slot positions
@@ -575,7 +576,10 @@ impl Display {
     }
 
     /// Emit one backdrop rect per widget of the group (all before the
-    /// group's first widget), then the widgets themselves.
+    /// group's first widget). User layers clear and paint their color; the
+    /// builtin group clears to the terminal default — necessary now that
+    /// the builtin can rise above other layers (its widgets don't paint
+    /// every cell, so lower layers would bleed through otherwise).
     fn flush_group(
         &self,
         decorated: &mut Vec<WidgetEntry>,
@@ -583,15 +587,18 @@ impl Display {
         owner: Option<LayerId>,
     ) {
         if let Some(owner) = owner {
-            if owner != self.builtin_id {
-                if let Some(color) = self.layer_color(owner) {
-                    for w in group.iter() {
-                        decorated.push(WidgetEntry {
-                            name: "display.backdrop",
-                            widget: Box::new(LayerBackdrop { color }),
-                            area: w.area,
-                        });
-                    }
+            let backdrop = if owner == self.builtin_id {
+                Some(Color::Reset)
+            } else {
+                self.layer_color(owner)
+            };
+            if let Some(color) = backdrop {
+                for w in group.iter() {
+                    decorated.push(WidgetEntry {
+                        name: "display.backdrop",
+                        widget: Box::new(LayerBackdrop { color }),
+                        area: w.area,
+                    });
                 }
             }
         }
