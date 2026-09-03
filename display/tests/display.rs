@@ -324,6 +324,30 @@ fn shift_tab_rotates_through_all_layers_including_builtin() {
     assert!(!display.route_event(&plain(KeyCode::Tab)));
 }
 
+/// Real terminals send Shift+Tab as CSI Z, which crossterm decodes to
+/// `KeyCode::BackTab` — a plain Tab+SHIFT never arrives from the wire.
+/// Rotation must fire for both encodings.
+#[test]
+fn backtab_from_a_real_terminal_rotates_too() {
+    let (mut display, ids) = display_with(vec![
+        Toy::new("a", rect(0, 0, 5, 5)),
+        Toy::new("b", rect(0, 6, 5, 5)),
+        Toy::new("c", rect(0, 12, 5, 5)),
+    ]);
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    assert_eq!(display.topmost(), Some(ids[2]));
+
+    let backtab = Event::Key(crossterm::event::KeyEvent::new(
+        KeyCode::BackTab,
+        KeyModifiers::SHIFT,
+    ));
+    assert!(display.route_event(&backtab), "CSI Z must rotate");
+    assert_eq!(display.topmost(), Some(LayerId::BUILTIN));
+    assert!(display.route_event(&backtab));
+    assert_eq!(display.topmost(), Some(ids[0]));
+}
+
 #[test]
 fn removing_a_layer_clears_ownership_and_grab() {
     let (mut display, ids) = display_with(vec![Toy::new("pop", rect(10, 5, 10, 5)).swallow_mouse()]);
