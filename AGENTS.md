@@ -124,7 +124,10 @@ continuous id mapped onto a color palette (≤8 terminal colors: all of them;
   keys/resize/focus are offered topmost-first with fall-through — unless
   the builtin layer is topmost, in which case they fall straight through
   to the core's input line so layers below cannot intercept; everything
-  passed falls through to the builtin handling.
+  passed falls through to the builtin handling. Activation is a kind of
+  FOCUS: the active layer is offered keys first and anything it swallows
+  is consumed (no other layer, no builtin handling sees it); passed keys
+  fall through to lower layers and finally the core.
 - **Layer lifecycle extras**: `on_overlay` returns a StackIntent
   (Top/Bottom/Keep) applied to the next frame's ordering; `on_active`
   fires when activate() targets the layer (taskbar click, Shift+Tab,

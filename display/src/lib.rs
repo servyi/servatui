@@ -46,6 +46,28 @@
 //!   to every layer (fall-through).
 //! - If every layer passes, the event falls through to servatui's builtin
 //!   handling (input line, log selection, scrollbar) unchanged.
+//!
+//! # Focus
+//!
+//! Activation-based routing implements a kind of **focus**: the active
+//! (topmost) layer is offered key input first, and **any input swallowed
+//! by the focused layer is not given to any other layer** — nor to
+//! servatui's builtin handling. Swallowing means consumption.
+//!
+//! The complementary rules:
+//! - A key the focused layer *passes* falls through to the layers below
+//!   (useful for background hotkey layers), and if every layer passes, the
+//!   core's builtin input line handles it.
+//! - When the *builtin* layer is the active one, keys fall straight
+//!   through to the core's input line — the input line is the focused
+//!   target and user layers below cannot intercept.
+//! - Mouse input is not focus-based but spatial: the visual occupant (the
+//!   topmost layer covering the click point) receives it exclusively.
+//!
+//! Focus follows activation: taskbar clicks, Shift+Tab rotation, swallowed
+//! presses, click-to-focus, and [`StackIntent::Top`] all change which
+//! layer is offered keys first (and fire [`DisplayLayer::on_active`] on
+//! the newly focused layer).
 
 use std::collections::{HashMap, HashSet};
 
@@ -71,7 +93,9 @@ impl LayerId {
 pub enum EventResult {
     /// Not mine — keep routing.
     Pass,
-    /// Handled — stop routing (and, for presses: activate + grab).
+    /// Handled — the event is consumed: no other layer and no builtin
+    /// handling will see it. For presses this also activates the layer
+    /// (it becomes the focused one) and grabs the pointer.
     Swallow,
 }
 
@@ -111,7 +135,10 @@ pub trait DisplayLayer {
 
     /// Offer an event. Mouse events arrive only when the pointer is inside
     /// one of this layer's owned areas (or while it holds the grab);
-    /// key/resize/focus events are offered to every layer, topmost first.
+    /// key/resize/focus events are offered to every layer, topmost first —
+    /// the active layer gets them first (see the crate docs' *Focus*
+    /// section). Returning [`EventResult::Swallow`] consumes the event:
+    /// no other layer and no builtin handling will see it.
     fn on_event(&mut self, ev: &Event, ctx: &LayerCtx) -> EventResult {
         let _ = (ev, ctx);
         EventResult::Pass
@@ -611,6 +638,17 @@ impl Display {
     /// builtin handling is then skipped), `false` to let it fall through.
     /// Requires a previous [`Display::frame`] this session (routing uses
     /// the stack order and widget areas of the last frame).
+    ///
+    /// # Focus semantics
+    ///
+    /// Activation implements a kind of focus: the active (topmost) layer
+    /// is offered key input first, and **any input swallowed by the
+    /// focused layer is not given to any other layer** (nor to the builtin
+    /// handling) — a swallow is consumption. Passed keys fall through to
+    /// lower layers and finally the core; when the builtin layer itself is
+    /// focused, keys go straight to the core's input line. Mouse events
+    /// are spatial instead: the visual occupant of the click point
+    /// receives them exclusively. See the crate docs for the full model.
     pub fn route_event(&mut self, ev: &Event) -> bool {
         use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
