@@ -179,17 +179,17 @@ fn layer_widgets_get_colored_underlay_builtins_do_not() {
     assert_eq!(owner, ids[0]);
     assert_eq!(display.owner_of(WIDGET_LOG), Some(LayerId::BUILTIN));
 
-    // An underlay entry is injected directly before the popup, but the
-    // builtin widgets get none (WIDGET_LOG is first in the vec, and no
-    // underlay anywhere carries its area).
+    // A backdrop entry is injected directly before the popup's group, but
+    // the builtin widgets get none (WIDGET_LOG is first in the vec, and no
+    // backdrop anywhere carries its area).
     let names: Vec<&'static str> = frame.iter().map(|w| w.name).collect();
     let popup_idx = names.iter().position(|n| *n == "popup").unwrap();
-    assert_eq!(frame[popup_idx - 1].name, "display.underlay");
+    assert_eq!(frame[popup_idx - 1].name, "display.backdrop");
     assert_eq!(frame[popup_idx - 1].area, rect(10, 5, 20, 10));
     assert_eq!(frame[0].name, WIDGET_LOG);
     assert!(!frame.iter().any(|w| {
-        w.name == "display.underlay" && w.area == rect(0, 0, 80, 21)
-    }), "builtin log must not get an underlay");
+        w.name == "display.backdrop" && w.area == rect(0, 0, 80, 21)
+    }), "builtin log must not get a backdrop");
 }
 
 #[test]
@@ -201,18 +201,23 @@ fn taskbar_one_cell_per_layer_on_bottom_row_click_activates() {
     let mut frame = builtin_frame();
     display.frame(&mut frame);
 
-    // Bottom row of the derived 80x24 terminal area.
-    let cells: Vec<(&'static str, Rect)> =
-        frame.iter().rev().take(3).map(|w| (w.name, w.area)).collect();
-    assert!(cells.iter().all(|(n, _)| *n == "display.taskbar"));
-    assert!(cells.iter().all(|(_, a)| a.y == 23 && a.height == 1 && a.width == 1));
+    // Bottom row of the derived 80x24 terminal area; the centered strip
+    // (3-wide buttons, 1 gap) starts at (80 - 11) / 2 = 34:
+    // builtin(slot 0)@34, a(slot 1)@38, b(slot 2)@42.
+    let cells: Vec<(&'static str, Rect)> = frame
+        .iter()
+        .filter(|w| w.name == "display.taskbar")
+        .map(|w| (w.name, w.area))
+        .collect();
+    assert_eq!(cells.len(), 3);
+    assert!(cells.iter().all(|(_, a)| a.y == 23 && a.height == 1 && a.width == 3));
 
-    // Clicking cell 2 (ascending stack order: builtin, a, b) activates b.
-    assert!(display.route_event(&down(2, 23)));
+    // Clicking a's cell (slot 1: x 38..=40) activates a.
+    assert!(display.route_event(&down(39, 23)));
     assert_eq!(display.topmost(), Some(ids[1]));
 
-    // Clicking cell 0 activates the builtin layer.
-    assert!(display.route_event(&down(0, 23)));
+    // Clicking the builtin cell (slot 0: x 34..=36) activates builtin.
+    assert!(display.route_event(&down(35, 23)));
     assert_eq!(display.topmost(), Some(LayerId::BUILTIN));
 }
 
@@ -344,6 +349,169 @@ fn new_layers_start_on_top() {
 }
 
 // ── rendering smoke: underlay actually paints ─────────────────────────
+
+/// A widget that fills its whole area with one character — like the log
+/// widget writes text everywhere, so we can observe what a backdrop clears.
+struct Fill(char);
+
+impl ratatui::widgets::WidgetRef for Fill {
+    fn render_ref(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(self.0);
+                }
+            }
+        }
+    }
+}
+
+struct FillLayer {
+    name: &'static str,
+    area: Rect,
+}
+
+impl DisplayLayer for FillLayer {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) {
+        widgets.push(WidgetEntry {
+            name: self.name,
+            widget: Box::new(Fill('A')),
+            area: self.area,
+        });
+    }
+}
+
+struct ParaLayer {
+    area: Rect,
+    second: Rect,
+}
+
+impl DisplayLayer for ParaLayer {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) {
+        widgets.push(WidgetEntry {
+            name: "b.para",
+            widget: Box::new(Paragraph::new("B")),
+            area: self.area,
+        });
+        widgets.push(WidgetEntry {
+            name: "b.second",
+            widget: Box::new(Paragraph::new("2")),
+            area: self.second,
+        });
+    }
+}
+
+#[test]
+fn backdrop_clears_content_and_is_not_interleaved_with_widgets() {
+    let mut display = Display::with_palette(palette_for(16));
+    display.add_layer(Box::new(FillLayer { name: "a.fill", area: rect(0, 0, 10, 3) }));
+    let b_id = display.add_layer(Box::new(ParaLayer {
+        area: rect(5, 0, 10, 3),
+        second: rect(20, 0, 6, 3),
+    }));
+    let b_color = display.layer_color(b_id).unwrap();
+
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+
+    let names: Vec<&'static str> = frame.iter().map(|w| w.name).collect();
+    // B's two backdrops sit directly before its first widget — never
+    // interleaved with the widgets themselves.
+    let para_idx = names.iter().position(|n| *n == "b.para").unwrap();
+    assert_eq!(names[para_idx - 1], "display.backdrop");
+    assert_eq!(names[para_idx - 2], "display.backdrop");
+    // One backdrop rect per widget (not a bounding rect over both).
+    assert_eq!(frame[para_idx - 2].area, rect(5, 0, 10, 3));
+    assert_eq!(frame[para_idx - 1].area, rect(20, 0, 6, 3));
+
+    // Render: the bottom layer's 'A's must not bleed through B's area.
+    let mut buf = ratatui::buffer::Buffer::empty(rect(0, 0, 80, 24));
+    for e in &frame {
+        e.widget.render_ref(e.area, &mut buf);
+    }
+    assert_eq!(buf[(2, 1)].symbol(), "A", "bottom layer visible outside B");
+    assert_eq!(buf[(6, 0)].symbol(), "B", "top widget content drawn");
+    assert_eq!(buf[(8, 1)].symbol(), " ", "backdrop must clear the A below");
+    assert_eq!(buf[(8, 1)].bg, b_color);
+    // The gap between B's two widgets belongs to no backdrop rect.
+    assert_ne!(buf[(16, 1)].bg, b_color);
+}
+
+#[test]
+fn activating_builtin_brings_its_widgets_to_front() {
+    let (mut display, _ids) = display_with(vec![Toy::new("a", rect(0, 0, 5, 5))]);
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    assert_eq!(frame[0].name, WIDGET_LOG, "builtin starts at the bottom");
+
+    display.activate(LayerId::BUILTIN);
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    let names: Vec<&'static str> = frame.iter().map(|w| w.name).collect();
+    assert_eq!(*names.last().unwrap(), WIDGET_INPUT, "activated builtin draws on top");
+    assert_eq!(names[names.len() - 2], WIDGET_LOG);
+}
+
+#[test]
+fn builtin_topmost_directs_keys_to_the_core() {
+    let (mut display, ids) = display_with(vec![
+        Toy::new("a", rect(0, 0, 80, 24)).swallow_keys(&[KeyCode::Char('x')]),
+    ]);
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    // User layer on top: it intercepts 'x'.
+    assert!(display.route_event(&plain(KeyCode::Char('x'))));
+
+    // Builtin on top: keystrokes fall through to the core's input line,
+    // not to layers below it.
+    display.activate(LayerId::BUILTIN);
+    let mut frame = builtin_frame();
+    display.frame(&mut frame);
+    assert!(!display.route_event(&plain(KeyCode::Char('x'))));
+
+    // Raising the user layer back restores interception.
+    display.activate(ids[0]);
+    assert!(display.route_event(&plain(KeyCode::Char('x'))));
+}
+
+#[test]
+fn taskbar_slots_are_stable_centered_and_three_wide() {
+    let (mut display, ids) = display_with(vec![
+        Toy::new("a", rect(0, 0, 5, 5)),
+        Toy::new("b", rect(0, 6, 5, 5)),
+    ]);
+    let cells = |display: &mut Display| {
+        let mut frame = builtin_frame();
+        display.frame(&mut frame);
+        let mut cells: Vec<Rect> =
+            frame.iter().filter(|w| w.name == "display.taskbar").map(|w| w.area).collect();
+        cells.sort_by_key(|r| r.x);
+        cells
+    };
+
+    let c = cells(&mut display);
+    assert_eq!(c.len(), 3);
+    // 3-wide buttons with a 1-column gap, strip centered on the 80-wide row.
+    let start = (80 - (3 * 4 - 1)) / 2;
+    for (i, cell) in c.iter().enumerate() {
+        assert_eq!(cell.width, 3, "buttons are 3 cells wide");
+        assert_eq!(cell.x, start + i as u16 * 4, "1 space between buttons");
+        assert_eq!(cell.y, 23);
+    }
+
+    // Stable under activation: raising `a` must not move anyone's cell.
+    display.activate(ids[0]);
+    assert_eq!(cells(&mut display), c, "positions must not follow priority order");
+
+    // Slot recycling: removing b frees its slot; a new layer reuses it.
+    let b_cell = c[2];
+    display.remove_layer(ids[1]);
+    assert_eq!(cells(&mut display).len(), 2);
+    display.add_layer(Box::new(Toy::new("c", rect(0, 12, 5, 5))));
+    let c3 = cells(&mut display);
+    assert_eq!(c3.len(), 3);
+    assert!(c3.contains(&b_cell), "a new layer must recycle b's freed slot");
+}
 
 #[test]
 fn underlay_paints_layer_color_behind_widget() {
