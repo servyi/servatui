@@ -789,3 +789,29 @@ fn clicks_stop_at_the_topmost_hit_layer() {
     assert!(display.route_event(&down(15, 10)));
     assert_eq!(display.grabbed(), Some(ids[0]));
 }
+
+#[test]
+fn log_sink_lines_land_in_the_builtin_log_box() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
+
+    use servyi_servatui::tui::BuiltinTui;
+
+    let socket = std::path::Path::new("/nonexistent-log-sink.sock");
+    let builtin = Rc::new(RefCell::new(BuiltinTui::new(socket, &[])));
+    let mut display = Display::with_palette(vec![ratatui::style::Color::Blue]);
+    display.attach_builtin(builtin.clone());
+
+    let sink: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    display.set_log_sink(sink.clone());
+
+    sink.lock().unwrap().push("Error: Invalid API key.".to_string());
+    display.drain_log_sink();
+    let log = &builtin.borrow().state.log_lines;
+    assert!(
+        log.iter().any(|l| l.contains("Invalid API key")),
+        "sink lines must appear in the log box: {log:?}"
+    );
+    assert!(sink.lock().unwrap().is_empty(), "sink drained");
+}

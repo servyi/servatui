@@ -240,6 +240,10 @@ pub struct Display<'a> {
     slot_of: HashMap<LayerId, usize>,
     free_slots: Vec<usize>,
     next_slot: usize,
+    /// Lines queued by the embedder (e.g. newly observed server errors);
+    /// drained into the builtin log at the start of every frame so they
+    /// appear in the log box immediately.
+    log_sink: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
 }
 
 /// The backdrop behind a layer's widget group: clears every cell in its
@@ -325,9 +329,35 @@ impl<'a> Display<'a> {
             terminal_area: Rect::new(0, 0, 80, 24),
             builtin_id,
             builtin_tui: None,
+            log_sink: None,
             slot_of: HashMap::from([(builtin_id, 0)]),
             free_slots: Vec::new(),
             next_slot: 1,
+        }
+    }
+
+    /// Queue lines that will be appended to the builtin log box at the
+    /// start of every frame while [`Display::run`] drives this display.
+    pub fn set_log_sink(&mut self, sink: std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        self.log_sink = Some(sink);
+    }
+
+    /// Drain the log sink into the builtin log (called once per frame by
+    /// [`Display::run`]); also usable directly in tests.
+    pub fn drain_log_sink(&mut self) {
+        let Some(sink) = &self.log_sink else { return };
+        let mut pending = sink.lock().unwrap();
+        if pending.is_empty() {
+            return;
+        }
+        let lines: Vec<String> = pending.drain(..).collect();
+        drop(pending);
+        if let Some(builtin) = &self.builtin_tui {
+            let mut tui = builtin.borrow_mut();
+            for line in lines {
+                tui.state.log_lines.push(line);
+            }
+            tui.state.scroll_up = 0;
         }
     }
 
@@ -782,7 +812,11 @@ impl<'a> Display<'a> {
         let display = RefCell::new(display);
         servyi_servatui::tui::run_tui_managed(
             builtin,
-            |widgets| display.borrow_mut().frame(widgets),
+            |widgets| {
+                let mut d = display.borrow_mut();
+                d.drain_log_sink();
+                d.frame(widgets);
+            },
             |ev| display.borrow_mut().route_event(ev),
         )
     }
