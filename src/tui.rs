@@ -1566,6 +1566,59 @@ mod tests {
         assert_eq!(input.value(), "grant 3", "wraps in the new list");
     }
 
+    /// Independent rotation check: a THREE-entry plugin list, no live
+    /// change — four Tabs must walk 1st -> 2nd -> 3rd -> wrap.
+    #[test]
+    fn tab_rotates_three_plugin_suggestions_no_live_change() {
+        let protocols = [completing_protocol(
+            "grant",
+            vec!["grant 5".into(), "grant 51".into(), "grant 7".into()],
+        )];
+        let mut input = tui_input::Input::new("grant ".into());
+        let mut comp = CompletionState { confirmed: 6, ..Default::default() };
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "grant 5");
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "grant 51");
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "grant 7");
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "grant 5", "wraps");
+    }
+
+    /// The same three-entry rotation through the REAL event path
+    /// (BuiltinTui::handle_event with actual Tab key presses).
+    #[test]
+    fn handle_event_rotates_three_plugin_suggestions() {
+        let protocols = [completing_protocol(
+            "grant",
+            vec!["grant 5".into(), "grant 51".into(), "grant 7".into()],
+        )];
+        let mut tui = BuiltinTui::new(
+            std::path::Path::new("/nonexistent-completion-test.sock"),
+            &protocols,
+        );
+        for ch in "grant ".chars() {
+            let ev = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(ch),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            assert!(tui.handle_event(&ev), "typing is consumed");
+        }
+        let tab = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(tui.handle_event(&tab));
+        assert_eq!(tui.input_value(), "grant 5");
+        assert!(tui.handle_event(&tab));
+        assert_eq!(tui.input_value(), "grant 51");
+        assert!(tui.handle_event(&tab));
+        assert_eq!(tui.input_value(), "grant 7");
+        assert!(tui.handle_event(&tab));
+        assert_eq!(tui.input_value(), "grant 5", "wraps");
+    }
+
     #[test]
     fn tab_completes_command_names_as_ghost() {
         let protocols = [completion_protocol("lorem"), completion_protocol("status")];
