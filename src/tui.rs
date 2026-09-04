@@ -1451,6 +1451,89 @@ mod tests {
 
     // ── tab completion: ghost + confirm model ─────────────────────
 
+    fn completing_protocol(name: &'static str, suggestions: Vec<String>) -> Protocol {
+        crate::Plugin::new(name, "test cmd")
+            .parse(|_: &str| Ok(()))
+            .client(|_: (), _: &mut dyn crate::Console, _: &mut dyn crate::InputSource| Ok(()))
+            .server(|_: ()| Ok(()))
+            .client(|_: (), _: &mut dyn crate::Console, _: &mut dyn crate::InputSource| Ok(()))
+            .finalize(|| Ok(crate::ShellAction::Continue))
+            .complete(move |confirmed: &str| {
+                suggestions.iter().filter(|s| s.starts_with(confirmed)).cloned().collect()
+            })
+    }
+
+    /// The builtin `help` command must be tab-completable like any
+    /// protocol command.
+    #[test]
+    fn tab_suggests_the_builtin_help_command() {
+        let protocols = [completion_protocol("status")];
+        let mut input = tui_input::Input::new("he".into());
+        let mut comp = CompletionState { confirmed: 2, ..Default::default() };
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "help", "the builtin help command is completable");
+    }
+
+    /// Plugin suggestions rotate on repeated Tabs and wrap around.
+    #[test]
+    fn tab_rotates_plugin_suggestions_and_wraps() {
+        let protocols = [completing_protocol(
+            "grant",
+            vec!["grant 5".into(), "grant 51".into()],
+        )];
+        let mut input = tui_input::Input::new("grant ".into());
+        let mut comp = CompletionState { confirmed: 6, ..Default::default() };
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "grant 5");
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "grant 51", "second Tab rotates to the next suggestion");
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "grant 5", "wraps around");
+    }
+
+    /// When the plugin's suggestion list changes between Tabs (live data,
+    /// e.g. a poller), the index is taken modulo the new length and
+    /// rotation continues in the new list.
+    #[test]
+    fn tab_keeps_rotating_when_plugin_suggestions_change() {
+        let list = std::sync::Arc::new(std::sync::Mutex::new(vec![
+            "grant 5".to_string(),
+            "grant 51".to_string(),
+        ]));
+        let l2 = list.clone();
+        let protocols = [crate::Plugin::new("grant", "test cmd")
+            .parse(|_: &str| Ok(()))
+            .client(|_: (), _: &mut dyn crate::Console, _: &mut dyn crate::InputSource| Ok(()))
+            .server(|_: ()| Ok(()))
+            .client(|_: (), _: &mut dyn crate::Console, _: &mut dyn crate::InputSource| Ok(()))
+            .finalize(|| Ok(crate::ShellAction::Continue))
+            .complete(move |confirmed: &str| {
+                l2.lock().unwrap()
+                    .iter()
+                    .filter(|s| s.starts_with(confirmed))
+                    .cloned()
+                    .collect()
+            })];
+        let mut input = tui_input::Input::new("grant ".into());
+        let mut comp = CompletionState { confirmed: 6, ..Default::default() };
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "grant 5");
+        // The live list changes underneath: 2 -> 3 suggestions.
+        *list.lock().unwrap() = vec![
+            "grant 3".to_string(),
+            "grant 5".to_string(),
+            "grant 7".to_string(),
+        ];
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(
+            input.value(),
+            "grant 7",
+            "index modulo the new length, rotation continues (1 -> 2)"
+        );
+        tab_complete(&mut input, &mut comp, &protocols);
+        assert_eq!(input.value(), "grant 3", "wraps in the new list");
+    }
+
     #[test]
     fn tab_completes_command_names_as_ghost() {
         let protocols = [completion_protocol("lorem"), completion_protocol("status")];
