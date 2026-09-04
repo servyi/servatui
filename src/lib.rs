@@ -7,6 +7,16 @@
 //! step executes. The framework handles transport (Unix socket + JSON),
 //! serialization, and provides a TUI or CLI frontend for free.
 
+/// The escape sequences that undo everything the TUI enables, in the
+/// order the normal-exit path uses: mouse capture off
+/// (1000/1002/1003/1015/1006), alternate screen off (1049), cursor
+/// visible (25h). Public so embedders (e.g. supervisors healing a
+/// terminal after a hard-killed child) emit the exact same sequences —
+/// the unit test in `terminal_restore` pins them against crossterm's
+/// own disable commands, so a crossterm bump cannot drift them.
+pub const TERMINAL_RESTORE_BYTES: &[u8] =
+    b"\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?25h";
+
 pub mod connection;
 pub mod console;
 #[cfg(feature = "tui")]

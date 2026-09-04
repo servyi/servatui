@@ -19,28 +19,11 @@
 
 use std::io::Write;
 
-/// The escape sequences that undo everything the TUI enables, in the
-/// same order the normal-exit path uses: mouse capture off
-/// (1000/1002/1003/1015/1006), alternate screen off (1049), cursor
-/// visible (25h).
-pub(crate) fn restore_bytes() -> Vec<u8> {
-    let mut buf = String::new();
-    use crossterm::Command;
-    crossterm::event::DisableMouseCapture
-        .write_ansi(&mut buf)
-        .ok();
-    crossterm::terminal::LeaveAlternateScreen
-        .write_ansi(&mut buf)
-        .ok();
-    crossterm::cursor::Show.write_ansi(&mut buf).ok();
-    buf.into_bytes()
-}
-
 /// Restore the terminal: disable mouse capture and the alternate
 /// screen, make the cursor visible, leave raw mode. Best-effort.
 pub(crate) fn restore_terminal() {
     let mut out = std::io::stdout();
-    let _ = out.write_all(&restore_bytes());
+    let _ = out.write_all(crate::TERMINAL_RESTORE_BYTES);
     let _ = out.flush();
     let _ = crossterm::terminal::disable_raw_mode();
 }
@@ -117,7 +100,7 @@ mod tests {
             .write_ansi(&mut expected)
             .unwrap();
         crossterm::cursor::Show.write_ansi(&mut expected).unwrap();
-        assert_eq!(restore_bytes(), expected.into_bytes());
+        assert_eq!(crate::TERMINAL_RESTORE_BYTES, expected.as_bytes());
     }
 
     /// Every mode the TUI enables has its literal disable sequence —
@@ -125,7 +108,7 @@ mod tests {
     /// (mouse capture 1006) staying on.
     #[test]
     fn restore_bytes_disable_every_enabled_mode() {
-        let bytes = restore_bytes();
+        let bytes = crate::TERMINAL_RESTORE_BYTES;
         for seq in [
             b"\x1b[?1000l".as_slice(),
             b"\x1b[?1002l",
