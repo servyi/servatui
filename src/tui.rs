@@ -1044,6 +1044,12 @@ pub(crate) struct CompletionState {
     pub confirmed: usize,
     /// Index of the currently shown suggestion (None = none shown yet).
     pub index: Option<usize>,
+    /// The suggestions `index` refers to, as of the last Tab. When the
+    /// list changes between Tabs (live plugin data), rotation
+    /// re-anchors on the currently shown suggestion instead of blindly
+    /// continuing the index — otherwise the modulo can land on the same
+    /// string and the visible suggestion never changes.
+    pub suggestions: Vec<String>,
 }
 
 /// Split `value` at the `confirmed`-th char (char-boundary safe).
@@ -1060,6 +1066,7 @@ fn split_confirmed(value: &str, confirmed: usize) -> (&str, &str) {
 fn confirm_all(input: &mut Input, comp: &mut CompletionState) {
     comp.confirmed = input.value().chars().count();
     comp.index = None;
+    comp.suggestions.clear();
 }
 
 /// ESC: delete the unconfirmed tail, reset the suggestion cycle.
@@ -1068,10 +1075,13 @@ fn esc_unconfirmed(input: &mut Input, comp: &mut CompletionState) {
     *input = Input::new(confirmed);
     comp.confirmed = input.value().chars().count();
     comp.index = None;
+    comp.suggestions.clear();
 }
 
-/// Suggestions for the confirmed string: command names while the first word
-/// is still being typed; the plugin's completer once arguments have started.
+/// Suggestions for the confirmed string, as one flat list the rotation
+/// cycles over: the shell's command list (the protocol commands plus the
+/// builtin `help`) while the first word is still being typed; the current
+/// command's completer once arguments have started.
 fn suggestions_for(protocols: &[Protocol], confirmed: &str) -> Vec<String> {
     let first = confirmed.split_whitespace().next().unwrap_or("");
     if confirmed.chars().any(char::is_whitespace) {
@@ -1084,11 +1094,15 @@ fn suggestions_for(protocols: &[Protocol], confirmed: &str) -> Vec<String> {
     } else if first.is_empty() {
         Vec::new()
     } else {
-        protocols
+        let mut names: Vec<String> = protocols
             .iter()
             .filter(|p| p.name.starts_with(first))
             .map(|p| p.name.to_string())
-            .collect()
+            .collect();
+        if "help".starts_with(first) && !names.iter().any(|n| n == "help") {
+            names.push("help".to_string());
+        }
+        names
     }
 }
 
@@ -1100,11 +1114,29 @@ fn tab_complete(input: &mut Input, comp: &mut CompletionState, protocols: &[Prot
     let options = suggestions_for(protocols, &confirmed);
     let n = options.len();
     if n == 0 {
+        comp.index = None;
+        comp.suggestions.clear();
         return;
     }
-    let idx = comp.index.map(|i| (i + 1) % n).unwrap_or(0);
+    // One rotation for every source (shell commands incl. help, plugin
+    // data): with an UNCHANGED list the index advances cyclically. With
+    // a CHANGED list (live plugin data), re-anchor on the currently
+    // shown suggestion — modulo the new length — and advance from there,
+    // so the visible suggestion always moves.
+    let idx = match comp.index {
+        None => 0,
+        Some(i) if comp.suggestions == options => (i + 1) % n,
+        Some(i) => {
+            let current = comp.suggestions.get(i).cloned();
+            let anchor = current
+                .and_then(|c| options.iter().position(|s| *s == c))
+                .unwrap_or_else(|| i.min(n - 1));
+            (anchor + 1) % n
+        }
+    };
     comp.index = Some(idx);
-    let suggestion = options[idx].clone();
+    comp.suggestions = options;
+    let suggestion = comp.suggestions[idx].clone();
     // Apply the suggestion with the cursor at its end (ready to keep
     // typing); the tail before the cursor stays unconfirmed/flashing and
     // repeated Tabs keep cycling from the same confirmed base.
