@@ -883,6 +883,13 @@ impl<'a> BuiltinTui<'a> {
         let mut offsets: Vec<usize> = Vec::with_capacity(self.state.log_lines.len());
         for s in &self.state.log_lines {
             let clean = s.rsplit_once('\r').map(|(_, last)| last).unwrap_or(s);
+            // Flatten stray control characters (newlines in gate/command
+            // output, BEL, escape bytes, ...) to spaces: a log entry must
+            // render as one ordinary wrapped line, never as broken glyphs.
+            let clean: String = clean
+                .chars()
+                .map(|c| if c.is_control() && c != '\t' { ' ' } else { c })
+                .collect();
             let clean = clean.replace('\t', "    ");
             for (row, off) in wrap_with_offsets(&clean, inner_width, "↪ ") {
                 wrapped.push(row);
@@ -2382,8 +2389,6 @@ mod tests {
 
     #[test]
     fn builtin_log_flattens_control_characters() {
-        use ratatui::widgets::WidgetRef as _;
-
         // Error messages (gate output, command output) can carry embedded
         // newlines and other control characters; a log entry must render as
         // ordinary text, never as broken control glyphs.
