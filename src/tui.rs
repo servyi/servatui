@@ -2380,4 +2380,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn builtin_log_flattens_control_characters() {
+        use ratatui::widgets::WidgetRef as _;
+
+        // Error messages (gate output, command output) can carry embedded
+        // newlines and other control characters; a log entry must render as
+        // ordinary text, never as broken control glyphs.
+        let mut builtin = BuiltinTui::new(std::path::Path::new("/nonexistent"), &[]);
+        builtin.state.log_lines.push("good line".into());
+        builtin.state.log_lines.push("bad\nline\u{7}\u{1b}[0m".into());
+
+        let mut widgets = Vec::new();
+        builtin.push_widgets(&mut widgets, ratatui::layout::Rect::new(0, 0, 40, 10), true);
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 10));
+        for w in &widgets {
+            w.widget.render_ref(w.area, &mut buf);
+        }
+        let bad = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[(x, y)].symbol().chars().any(|c| c.is_control()))
+            .count();
+        assert_eq!(bad, 0, "control characters must never reach the buffer");
+    }
+
 }
