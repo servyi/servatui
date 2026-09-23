@@ -645,7 +645,7 @@ struct TuiHooks<'a> {
 /// The builtin TUI (log + input line + scrollbar + their behavior) as one
 /// object, so the same code can run either directly inside `tui_loop` or
 /// inside a display layer (the `servatui-display` crate wraps a shared
-/// instance as its builtin [`servatui_display`] layer — the builtin is then
+/// instance as its builtin `servatui_display` layer — the builtin is then
 /// an ordinary layer, not a special case in the router).
 ///
 /// Shared via `Rc<RefCell<BuiltinTui>>` when a display drives it.

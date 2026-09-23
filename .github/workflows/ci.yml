@@ -17,8 +17,9 @@ jobs:
         with:
           toolchain: nightly-2026-09-21
       - uses: Swatinem/rust-cache@v2
-      # Builds every target, including the tui examples that
-      # tests/terminal_restore.rs spawns.
+      # `--all-targets` builds examples only as test harnesses; the
+      # plain binaries that tests/terminal_restore.rs spawns need this.
+      - run: cargo build --workspace --examples
       - run: cargo test --workspace --all-targets
 
   lint-policy:
