@@ -5,8 +5,6 @@ edition = "2021"
 license = "MIT"
 description = "Window-manager layers for servatui TUIs: priorities, activation, taskbar, and event routing."
 
-[lints]
-workspace = true
 
 [dependencies]
 servyi-servatui = { path = ".." }
