@@ -188,7 +188,11 @@ fn query_csi_18t() -> Option<(u16, u16)> {
 
     // Wait briefly for the reply (terminals answer in a few ms).
     let mut pfd = libc::pollfd { fd: tty.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    if unsafe { libc::poll(&mut pfd, 1, 15) } <= 0 {
+    let nfds = 1;
+    let timeout_ms = 15;
+    // SAFETY: `pfd` refers to the open tty file descriptor and is only
+    // accessed by this single poll call.
+    if unsafe { libc::poll(&mut pfd, nfds, timeout_ms) } <= 0 {
         return None;
     }
 
@@ -212,7 +216,7 @@ fn csi_size_cached() -> Option<(u16, u16)> {
     use std::time::{Duration, Instant};
     type CsiCache = Option<(Instant, Option<(u16, u16)>)>;
     static CACHE: Mutex<CsiCache> = Mutex::new(None);
-    let mut guard = CACHE.lock().unwrap();
+    let mut guard = CACHE.lock().expect("CSI cache mutex poisoned");
     let now = Instant::now();
     let stale = matches!(*guard, Some((t, _)) if now.duration_since(t) >= Duration::from_millis(500));
     if stale || guard.is_none() {
@@ -511,11 +515,11 @@ impl ratatui::widgets::WidgetRef for LogWidget {
                 };
 
                 if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_char(*ch);
+                    let _cell = cell.set_char(*ch);
                     if is_selected {
-                        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                        let _cell = cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
                     } else if is_cont && col < 2 {
-                        cell.set_style(gray);
+                        let _cell = cell.set_style(gray);
                     }
                 }
             }
@@ -599,7 +603,7 @@ where
 
     enable_raw_mode().map_err(|e| e.to_string())?;
     execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture).map_err(|e| e.to_string())?;
-    std::io::stdout().flush().ok();
+    let _flushed = std::io::stdout().flush().ok();
 
     let backend = SizeOverrideBackend { inner: CrosstermBackend::new(std::io::stdout()) };
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
@@ -641,7 +645,7 @@ struct TuiHooks<'a> {
 /// The builtin TUI (log + input line + scrollbar + their behavior) as one
 /// object, so the same code can run either directly inside `tui_loop` or
 /// inside a display layer (the `servatui-display` crate wraps a shared
-/// instance as its builtin [`servatui_display`] layer — the builtin is then
+/// instance as its builtin `servatui_display` layer — the builtin is then
 /// an ordinary layer, not a special case in the router).
 ///
 /// Shared via `Rc<RefCell<BuiltinTui>>` when a display drives it.
@@ -690,6 +694,11 @@ impl<'a> BuiltinTui<'a> {
     /// scrolling/selection, command execution). Returns `true` when the
     /// event was consumed — key presses and mouse events always are;
     /// everything else (non-press keys, resize, focus) is left for others.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the CSI cache mutex was poisoned by a panicking concurrent
+    /// user, or on internal invariant violation while navigating history.
     pub fn handle_event(&mut self, ev: &crossterm::event::Event) -> bool {
         use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
         use tui_input::backend::crossterm::EventHandler;
@@ -792,7 +801,9 @@ impl<'a> BuiltinTui<'a> {
                         Some(i) => i - 1,
                         None => state.history.len() - 1,
                     });
-                    *input = tui_input::Input::new(state.history[state.history_idx.unwrap()].clone());
+                    *input = tui_input::Input::new(
+                        state.history[state.history_idx.expect("set in this branch")].clone(),
+                    );
                     confirm_all(input, completion);
                 }
             }
@@ -1007,7 +1018,7 @@ where
             last_blink = Instant::now();
             blink_on = !blink_on;
         }
-        terminal.draw(|f| {
+        let _frame = terminal.draw(|f| {
             let mut widgets: Vec<WidgetEntry> = Vec::new();
             let cursor =
                 builtin.borrow_mut().push_widgets(&mut widgets, f.area(), blink_on);
@@ -1450,7 +1461,7 @@ fn execute_command(proto: &Protocol, args: &str, socket: &Path) -> Result<Vec<St
         }
     };
     conn.send_typed(&proto.name.to_string())?;
-    proto.run_client(args, &mut conn, &mut console, &mut input_src)?;
+    let _lines = proto.run_client(args, &mut conn, &mut console, &mut input_src)?;
     Ok(console.lines)
 }
 
@@ -2397,7 +2408,7 @@ mod tests {
         builtin.state.log_lines.push("bad\nline\u{7}\u{1b}[0m".into());
 
         let mut widgets = Vec::new();
-        builtin.push_widgets(&mut widgets, ratatui::layout::Rect::new(0, 0, 40, 10), true);
+        let _extent = builtin.push_widgets(&mut widgets, ratatui::layout::Rect::new(0, 0, 40, 10), true);
         let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 10));
         for w in &widgets {
             w.widget.render_ref(w.area, &mut buf);

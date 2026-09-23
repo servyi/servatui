@@ -1,6 +1,7 @@
 //! Terminal size diagnostic.
 //!
 //! Run: cargo run --example size-check --features tui
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::io::Write;
 
@@ -26,7 +27,7 @@ fn main() {
     // Enter raw mode + alternate screen (same as TUI does)
     crossterm::terminal::enable_raw_mode().unwrap();
     crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen).unwrap();
-    std::io::stdout().flush().ok();
+    let _flushed = std::io::stdout().flush().ok();
 
     let size_after = crossterm::terminal::size();
     let cols_after = std::env::var("COLUMNS").unwrap_or_else(|_| "<not set>".into());
@@ -39,8 +40,8 @@ fn main() {
     eprintln!("$LINES={}", lines_after);
 
     // Exit
-    crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen).ok();
-    crossterm::terminal::disable_raw_mode().ok();
+    let _res = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen).ok();
+    let _res = crossterm::terminal::disable_raw_mode().ok();
 
     println!();
     println!("=== After exit ===");
@@ -48,5 +49,7 @@ fn main() {
 }
 
 fn isatty(fd: i32) -> bool {
-    unsafe { libc::isatty(fd) != 0 }
+    // SAFETY: `fd` was passed in as an open file descriptor (stdout).
+    let is_tty = unsafe { libc::isatty(fd) };
+    is_tty != 0
 }

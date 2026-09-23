@@ -2,6 +2,7 @@
 //!
 //! These tests use MockCommand from ioprovider to verify that server steps
 //! can execute commands and return results, without real subprocesses.
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use servyi_servatui::*;
 use servyi_ioprovider::{IOProvider, MockCommand, CommandRequest, CommandResult};

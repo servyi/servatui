@@ -120,7 +120,7 @@ pub trait DisplayLayer {
     /// The return value states where the layer wants to sit on the next
     /// frame: [`StackIntent::Top`] rises it above everyone, `Bottom` sinks
     /// it below everyone, `Keep` leaves the priority as it is.
-    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent;
+    fn on_overlay(&mut self, ctx: &mut LayerCtx<'_>, widgets: &mut Vec<WidgetEntry>) -> StackIntent;
 
     /// Called when this layer becomes the topmost one (activation), e.g.
     /// via a taskbar click, Shift+Tab rotation, a swallowed press, or a
@@ -141,7 +141,7 @@ pub trait DisplayLayer {
     /// the active layer gets them first (see the crate docs' *Focus*
     /// section). Returning [`EventResult::Swallow`] consumes the event:
     /// no other layer and no builtin handling will see it.
-    fn on_event(&mut self, ev: &Event, ctx: &LayerCtx) -> EventResult {
+    fn on_event(&mut self, ev: &Event, ctx: &LayerCtx<'_>) -> EventResult {
         let _ = (ev, ctx);
         EventResult::Pass
     }
@@ -259,7 +259,7 @@ impl ratatui::widgets::WidgetRef for LayerBackdrop {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.reset();
-                    cell.set_bg(self.color);
+                    let _cell = cell.set_bg(self.color);
                 }
             }
         }
@@ -281,11 +281,11 @@ struct BuiltinLayer<'a> {
 }
 
 impl DisplayLayer for BuiltinLayer<'_> {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, _widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx<'_>, _widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         StackIntent::Keep
     }
 
-    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
+    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx<'_>) -> EventResult {
         let Some(tui) = &self.tui else { return EventResult::Pass };
         if tui.borrow_mut().handle_event(ev) {
             EventResult::Swallow
@@ -298,7 +298,7 @@ impl DisplayLayer for BuiltinLayer<'_> {
 struct NoopLayer;
 
 impl DisplayLayer for NoopLayer {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, _widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx<'_>, _widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         StackIntent::Keep
     }
 }
@@ -344,9 +344,13 @@ impl<'a> Display<'a> {
 
     /// Drain the log sink into the builtin log (called once per frame by
     /// [`Display::run`]); also usable directly in tests.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the log sink mutex was poisoned by a panicking writer.
     pub fn drain_log_sink(&mut self) {
         let Some(sink) = &self.log_sink else { return };
-        let mut pending = sink.lock().unwrap();
+        let mut pending = sink.lock().expect("log sink mutex poisoned");
         if pending.is_empty() {
             return;
         }
@@ -388,7 +392,7 @@ impl<'a> Display<'a> {
                 s
             }
         };
-        self.slot_of.insert(id, taskbar_slot);
+        let _prev = self.slot_of.insert(id, taskbar_slot);
         let priority = self.slots.iter().map(|s| s.priority).max().unwrap_or(0) + 1;
         self.slots.push(LayerSlot { id, layer, priority, seq: self.next_id, label });
         id
@@ -408,7 +412,7 @@ impl<'a> Display<'a> {
             self.free_slots.push(taskbar_slot);
         }
         self.owners.retain(|_, owner| *owner != id);
-        self.cached_widgets.remove(&id);
+        let _cached = self.cached_widgets.remove(&id);
         Some(slot.layer)
     }
 
@@ -537,7 +541,7 @@ impl<'a> Display<'a> {
         // Pre-existing names (the core's builtin widgets) belong to the
         // builtin layer unless a previous frame attributed them otherwise.
         for w in widgets.iter() {
-            self.owners.entry(w.name).or_insert(self.builtin_id);
+            let _owner = self.owners.entry(w.name).or_insert(self.builtin_id);
         }
 
         // Run each layer's overlay pass, attributing newly added names and
@@ -555,11 +559,11 @@ impl<'a> Display<'a> {
                 LayerCtx { id, color, terminal_area: self.terminal_area, my_widgets: &cached };
             let intent = layer.on_overlay(&mut ctx, widgets);
             self.slots[i].layer = layer;
-            intents.insert(id, intent);
+            let _prev = intents.insert(id, intent);
 
             for w in widgets.iter() {
                 if !before.contains(&w.name) {
-                    self.owners.entry(w.name).or_insert(id);
+                    let _owner = self.owners.entry(w.name).or_insert(id);
                 }
             }
         }

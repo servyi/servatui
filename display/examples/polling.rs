@@ -21,6 +21,7 @@
 //! clicking either raises it above the other, and Shift+Tab rotates the
 //! stacking. The numbers layer hides its taskbar button while nothing
 //! is pending.
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -135,7 +136,7 @@ impl DisplayLayer for NotesLayer {
         self.open = true;
     }
 
-    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+    fn on_overlay(&mut self, ctx: &mut LayerCtx<'_>, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         if !self.open {
                         return StackIntent::Keep;
         }
@@ -155,7 +156,7 @@ impl DisplayLayer for NotesLayer {
     StackIntent::Keep
 }
 
-    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
+    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx<'_>) -> EventResult {
         if let Event::Mouse(m) = ev {
             // Clicks are only offered inside our area: swallow them while
             // open, which also activates us (raises over the numbers popup).
@@ -180,7 +181,7 @@ impl DisplayLayer for NotesLayer {
                 EventResult::Swallow
             }
             KeyCode::Backspace => {
-                self.buffer.pop();
+                let _popped = self.buffer.pop();
                 EventResult::Swallow
             }
             KeyCode::Enter => {
@@ -239,7 +240,7 @@ impl DisplayLayer for PollLayer {
         true
     }
 
-    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+    fn on_overlay(&mut self, ctx: &mut LayerCtx<'_>, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         // Poll at most every 2s (on_overlay runs ~10x/s while idle).
         let due = match self.last_poll {
             None => true,
@@ -265,7 +266,7 @@ impl DisplayLayer for PollLayer {
     StackIntent::Keep
 }
 
-    fn on_event(&mut self, ev: &Event, ctx: &LayerCtx) -> EventResult {
+    fn on_event(&mut self, ev: &Event, ctx: &LayerCtx<'_>) -> EventResult {
         if self.numbers.len() <= self.seen {
             return EventResult::Pass;
         }
@@ -319,7 +320,7 @@ fn main() {
     // Generator: a random number every 2 seconds (xorshift, no deps).
     {
         let numbers = numbers.clone();
-        std::thread::spawn(move || {
+        let _generator = std::thread::spawn(move || {
             let mut state = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -339,7 +340,7 @@ fn main() {
     let handle = ServerHandle { socket: socket.clone(), protocols: vec![numbers_protocol()] };
     {
         let numbers = numbers.clone();
-        std::thread::spawn(move || handle.run(numbers).ok());
+        let _number_source = std::thread::spawn(move || handle.run(numbers).ok());
     }
     for _ in 0..200 {
         if SocketConnection::server_exists(&socket) {
@@ -350,14 +351,14 @@ fn main() {
 
     // Client: the TUI through the display manager.
     let mut display = Display::new();
-    display.add_layer(Box::new(PollLayer {
+    let _layer_id = display.add_layer(Box::new(PollLayer {
         socket: socket.clone(),
         numbers: Vec::new(),
         seen: 0,
         focus: 0,
         last_poll: None,
     }));
-    display.add_layer(Box::new(NotesLayer::new()));
+    let _layer_id = display.add_layer(Box::new(NotesLayer::new()));
     let result = display.run(&socket, &[numbers_protocol()]);
 
     let _ = std::fs::remove_file(&socket);

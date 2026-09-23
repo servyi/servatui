@@ -5,6 +5,7 @@
 //!
 //! Deterministic by construction: the test (not a timing-dependent
 //! generator thread) decides when new numbers appear in the server state.
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -42,7 +43,7 @@ struct EagerPollLayer {
 }
 
 impl DisplayLayer for EagerPollLayer {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx<'_>, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         let raw = SocketConnection::connect(&self.socket)
             .and_then(|mut conn| {
                 conn.send_typed(&"numbers".to_string())?;
@@ -68,7 +69,7 @@ impl DisplayLayer for EagerPollLayer {
     StackIntent::Keep
 }
 
-    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
+    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx<'_>) -> EventResult {
         if self.numbers.len() <= self.seen {
             return EventResult::Pass;
         }
@@ -118,7 +119,7 @@ fn poll_popup_appears_acknowledges_and_reappears() {
     let handle = ServerHandle { socket: socket.clone(), protocols: vec![numbers_protocol()] };
     {
         let numbers = numbers.clone();
-        std::thread::spawn(move || handle.run(numbers).ok());
+        let _number_source = std::thread::spawn(move || handle.run(numbers).ok());
     }
     for _ in 0..200 {
         if SocketConnection::server_exists(&socket) {
@@ -137,7 +138,7 @@ fn poll_popup_appears_acknowledges_and_reappears() {
     // First poll: one unseen number -> popup appears.
     let mut frame = builtin_frame();
     display.frame(&mut frame);
-    has_popup(&frame).expect("unseen number must open the popup");
+    let _hit = has_popup(&frame).expect("unseen number must open the popup");
 
     // A click OUTSIDE the popup is consumed by the builtin layer (its own
     // log handling runs; the popup below is not acknowledged) and focuses

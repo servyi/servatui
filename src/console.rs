@@ -32,7 +32,7 @@ impl InputSource for StdinInput {
         print!("{prompt}");
         std::io::stdout().flush().map_err(|e| e.to_string())?;
         let mut line = String::new();
-        std::io::stdin()
+        let _n = std::io::stdin()
             .read_line(&mut line)
             .map_err(|e| e.to_string())?;
         Ok(line.trim().to_string())

@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-09-21
+      - uses: Swatinem/rust-cache@v2
+      # `--all-targets` builds examples only as test harnesses; the
+      # plain binaries that tests/terminal_restore.rs spawns need this.
+      - run: cargo build --workspace --examples
+      - run: cargo test --workspace --all-targets
+
+  lint-policy:
+    uses: servyi/lints/.github/workflows/lint-policy.yml@main

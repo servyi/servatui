@@ -1,4 +1,5 @@
 //! Integration test: start a real server, connect a client, verify response.
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use servyi_servatui::*;
 use serde::{Serialize, Deserialize};
