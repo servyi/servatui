@@ -5,6 +5,9 @@ edition = "2021"
 license = "MIT"
 description = "Window-manager layers for servatui TUIs: priorities, activation, taskbar, and event routing."
 
+[lints]
+workspace = true
+
 [dependencies]
 servyi-servatui = { path = ".." }
 ratatui = { version = "0.28", features = ["unstable-widget-ref"] }
