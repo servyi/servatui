@@ -28,7 +28,7 @@ impl ServerHandle {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.socket, std::fs::Permissions::from_mode(0o666)).ok();
+            let _prev = std::fs::set_permissions(&self.socket, std::fs::Permissions::from_mode(0o666)).ok();
         }
 
         let protocols = Arc::new(self.protocols);
@@ -38,7 +38,7 @@ impl ServerHandle {
                 Ok(stream) => {
                     let protocols = Arc::clone(&protocols);
                     let ctx = Arc::clone(&ctx);
-                    std::thread::spawn(move || {
+                    let _worker = std::thread::spawn(move || {
                         let reader = match stream.try_clone() {
                             Ok(r) => r,
                             Err(e) => { eprintln!("Clone error: {e}"); return; }

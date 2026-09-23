@@ -5,6 +5,7 @@
 //! The picker is a plain [`DisplayLayer`]: while open it swallows the
 //! navigation keys, so they never reach the input line. The title bar shows
 //! the committed choice.
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::layout::Rect;
@@ -38,7 +39,7 @@ impl DisplayLayer for Picker {
         'P'
     }
 
-    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+    fn on_overlay(&mut self, ctx: &mut LayerCtx<'_>, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         if !self.open {
             return StackIntent::Keep;
         }
@@ -66,7 +67,7 @@ impl DisplayLayer for Picker {
     StackIntent::Keep
 }
 
-    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
+    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx<'_>) -> EventResult {
         let Event::Key(k) = ev else { return EventResult::Pass };
         if k.kind != KeyEventKind::Press {
             return EventResult::Pass;
@@ -105,7 +106,7 @@ impl DisplayLayer for Picker {
 
 fn main() {
     let mut display = Display::new();
-    display.add_layer(Box::new(Picker { open: true, selected: 0, committed: None }));
+    let _layer_id = display.add_layer(Box::new(Picker { open: true, selected: 0, committed: None }));
 
     let protocols: Vec<Protocol> = vec![];
     display

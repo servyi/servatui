@@ -133,7 +133,7 @@ impl MouseTracker {
             } else {
                 Color::DarkGray
             };
-            cell.set_style(Style::default().bg(bg).add_modifier(Modifier::BOLD));
+            let _cell = cell.set_style(Style::default().bg(bg).add_modifier(Modifier::BOLD));
         }
     }
 

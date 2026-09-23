@@ -70,7 +70,7 @@ fn install_signal_thread() {
         if let Ok(signals) = Signals::new([SIGTERM, SIGINT, SIGHUP]) {
             // Process-lifetime: unregistered only when the process ends.
             let signals = Box::leak(Box::new(signals));
-            std::thread::spawn(move || {
+            let _signal_thread = std::thread::spawn(move || {
                 // Blocks until the first signal; the handler exits the
                 // process, so at most one iteration ever runs.
                 if let Some(sig) = signals.forever().next() {

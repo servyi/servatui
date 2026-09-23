@@ -4,6 +4,7 @@
 //!
 //! Follow on-screen instructions. The mouse position is highlighted in real-time.
 //! Button states shown in footer. Press 'q' to quit and dump events.
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::time::{Duration, Instant};
 
@@ -73,7 +74,7 @@ fn main() -> std::io::Result<()> {
         let mut log_inner = Rect::default();
         let mut log_area = Rect::default();
 
-        terminal.draw(|f| {
+        let _frame = terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(8), Constraint::Length(3)])
@@ -108,37 +109,37 @@ fn main() -> std::io::Result<()> {
                 let y = line_at(buf, ">>> ", Style::default().fg(Color::Yellow));
                 buf.set_string(x + 4, y, instructions[step], Style::default());
             }
-            line_at(buf, "", Style::default());
+            let _width = line_at(buf, "", Style::default());
 
             // Row 2: click X
             let y = line_at(buf, "  X click here", Style::default());
-            buf.cell_mut((x + 2, y)).map(|c| c.set_char('X').set_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+            let _cell = buf.cell_mut((x + 2, y)).map(|c| c.set_char('X').set_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
 
             // Row 3: drag A→B
             let y = line_at(buf, "  A........................................B", Style::default());
-            buf.cell_mut((x + 2, y)).map(|c| c.set_char('A').set_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
-            buf.cell_mut((x + 44, y)).map(|c| c.set_char('B').set_style(Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)));
+            let _cell = buf.cell_mut((x + 2, y)).map(|c| c.set_char('A').set_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
+            let _cell = buf.cell_mut((x + 44, y)).map(|c| c.set_char('B').set_style(Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)));
 
             // Row 4: double-click HELLO
             let y = line_at(buf, "  The word HELLO is here", Style::default());
             for (i, _) in "HELLO".chars().enumerate() {
-                buf.cell_mut((x + 11 + i as u16, y)).map(|c| c.set_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+                let _cell = buf.cell_mut((x + 11 + i as u16, y)).map(|c| c.set_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
             }
 
             // Row 5: scroll
-            line_at(buf, "  scroll wheel here", Style::default());
+            let _width = line_at(buf, "  scroll wheel here", Style::default());
 
             // Row 6: ctrl+drag C→D
             let y = line_at(buf, "  C........................................D", Style::default());
-            buf.cell_mut((x + 2, y)).map(|c| c.set_char('C').set_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
-            buf.cell_mut((x + 44, y)).map(|c| c.set_char('D').set_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+            let _cell = buf.cell_mut((x + 2, y)).map(|c| c.set_char('C').set_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+            let _cell = buf.cell_mut((x + 44, y)).map(|c| c.set_char('D').set_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
 
-            line_at(buf, "", Style::default());
+            let _width = line_at(buf, "", Style::default());
 
             // Footer: tracker status + event count
             let status = format!("{}  |  Events: {}  |  Step: {}/{}",
                 tracker.status_string(), events.len(), step + 1, instructions.len());
-            line_at(buf, &status, Style::default().fg(Color::DarkGray));
+            let _width = line_at(buf, &status, Style::default().fg(Color::DarkGray));
 
             // Highlight current mouse position (overlays everything)
             let full_area = f.area();

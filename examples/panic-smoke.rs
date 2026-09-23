@@ -5,6 +5,7 @@
 //! panic during rendering.
 //!
 //! Run: cargo run --features tui --example panic-smoke -- /tmp/x.sock
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

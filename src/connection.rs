@@ -125,11 +125,11 @@ pub struct TestEndpoint {
 
 impl RawConnection for TestEndpoint {
     fn send_bytes(&mut self, data: &[u8]) -> Result<(), String> {
-        self.outgoing.lock().unwrap().push_back(data.to_vec());
+        self.outgoing.lock().expect("test endpoint mutex poisoned").push_back(data.to_vec());
         Ok(())
     }
     fn recv_bytes(&mut self) -> Result<Vec<u8>, String> {
-        self.incoming.lock().unwrap().pop_front().ok_or("no data".into())
+        self.incoming.lock().expect("test endpoint mutex poisoned").pop_front().ok_or("no data".into())
     }
 }
 

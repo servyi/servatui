@@ -12,6 +12,7 @@
 //! sequences (`\x1b[?1006l`, `\x1b[?1049l`) reach the pty.
 //!
 //! Requires: Linux (util-linux script) and the default `tui` feature.
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::fs;
 use std::io::Read;
@@ -91,7 +92,7 @@ fn spawn_under_pty(cmd: &str, typescript: &Path) -> std::process::Child {
 
 fn poll_exit(child: &mut std::process::Child, deadline_ms: u128) -> Option<std::process::ExitStatus> {
     let mut status = None;
-    wait_until(deadline_ms, || match child.try_wait() {
+    let _done = wait_until(deadline_ms, || match child.try_wait() {
         Ok(Some(s)) => {
             status = Some(s);
             true
@@ -135,7 +136,7 @@ fn sigterm_restores_mouse_capture_and_alt_screen() {
         }
     };
 
-    Command::new("kill")
+    let _status = Command::new("kill")
         .arg(pid.to_string())
         .status()
         .expect("kill failed");

@@ -7,6 +7,7 @@
 //! - clicking outside a popup's visible box closes it (full-screen modal)
 //! - Shift+Tab rotates through the layers; the taskbar cells are clickable
 //! - typing `exit` still works: keys no popup swallows reach the input line
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
@@ -36,7 +37,7 @@ impl Popup {
 }
 
 impl DisplayLayer for Popup {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx<'_>, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         if !self.open {
                         return StackIntent::Keep;
         }
@@ -52,7 +53,7 @@ impl DisplayLayer for Popup {
     StackIntent::Keep
 }
 
-    fn on_event(&mut self, ev: &Event, ctx: &LayerCtx) -> EventResult {
+    fn on_event(&mut self, ev: &Event, ctx: &LayerCtx<'_>) -> EventResult {
         match ev {
             Event::Key(k)
                 if k.kind == KeyEventKind::Press && Some(k.code) == self.toggle_key.map(KeyCode::Char) =>
@@ -84,13 +85,13 @@ impl DisplayLayer for Popup {
 
 fn main() {
     let mut display = Display::new();
-    display.add_layer(Box::new(Popup {
+    let _layer_id = display.add_layer(Box::new(Popup {
         widget_name: "demo.popup.info",
         title: " Info — Esc closes, Shift+Tab rotates, p opens the second ",
         open: true,
         toggle_key: None,
     }));
-    display.add_layer(Box::new(Popup {
+    let _layer_id = display.add_layer(Box::new(Popup {
         widget_name: "demo.popup.second",
         title: " Second — click outside me to dismiss ",
         open: false,

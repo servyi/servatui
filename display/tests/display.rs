@@ -1,5 +1,6 @@
 //! Headless tests for the display layer stack: routing, priorities,
 //! attribution, underlays, taskbar, grab, and rotation.
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::sync::Arc;
 use std::path::PathBuf;
@@ -81,13 +82,13 @@ impl Toy {
 }
 
 impl DisplayLayer for Toy {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx<'_>, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         widgets.push(widget(self.widget_name, self.area));
     
     StackIntent::Keep
 }
 
-    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
+    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx<'_>) -> EventResult {
         self.log.push(format!("{ev:?}"));
         match ev {
             Event::Key(k) if k.kind == KeyEventKind::Press && self.keys.contains(&k.code) => {
@@ -357,7 +358,7 @@ fn removing_a_layer_clears_ownership_and_grab() {
     assert!(display.route_event(&down(12, 7)));
     assert_eq!(display.grabbed(), Some(ids[0]));
 
-    display.remove_layer(ids[0]).expect("layer removed");
+    let _removed = display.remove_layer(ids[0]).expect("layer removed");
     assert_eq!(display.grabbed(), None);
     assert_eq!(display.owner_of("pop"), None);
     // Its events now fall through.
@@ -386,7 +387,7 @@ impl ratatui::widgets::WidgetRef for Fill {
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_char(self.0);
+                    let _cell = cell.set_char(self.0);
                 }
             }
         }
@@ -399,7 +400,7 @@ struct FillLayer {
 }
 
 impl DisplayLayer for FillLayer {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx<'_>, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         widgets.push(WidgetEntry {
             name: self.name,
             widget: Box::new(Fill('A')),
@@ -416,7 +417,7 @@ struct ParaLayer {
 }
 
 impl DisplayLayer for ParaLayer {
-    fn on_overlay(&mut self, _ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+    fn on_overlay(&mut self, _ctx: &mut LayerCtx<'_>, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         widgets.push(WidgetEntry {
             name: "b.para",
             widget: Box::new(Paragraph::new("B")),
@@ -435,7 +436,7 @@ impl DisplayLayer for ParaLayer {
 #[test]
 fn backdrop_clears_content_and_is_not_interleaved_with_widgets() {
     let mut display = Display::with_palette(palette_for(16));
-    display.add_layer(Box::new(FillLayer { name: "a.fill", area: rect(0, 0, 10, 3) }));
+    let _layer_id = display.add_layer(Box::new(FillLayer { name: "a.fill", area: rect(0, 0, 10, 3) }));
     let b_id = display.add_layer(Box::new(ParaLayer {
         area: rect(5, 0, 10, 3),
         second: rect(20, 0, 6, 3),
@@ -532,7 +533,7 @@ fn taskbar_slots_are_stable_centered_and_three_wide() {
         Toy::new("a", rect(0, 0, 5, 5)),
         Toy::new("b", rect(0, 6, 5, 5)),
     ]);
-    let cells = |display: &mut Display| {
+    let cells = |display: &mut Display<'_>| {
         let mut frame = builtin_frame();
         display.frame(&mut frame);
         let mut cells: Vec<Rect> =
@@ -557,9 +558,9 @@ fn taskbar_slots_are_stable_centered_and_three_wide() {
 
     // Slot recycling: removing b frees its slot; a new layer reuses it.
     let b_cell = c[2];
-    display.remove_layer(ids[1]);
+    let _removed = display.remove_layer(ids[1]);
     assert_eq!(cells(&mut display).len(), 2);
-    display.add_layer(Box::new(Toy::new("c", rect(0, 12, 5, 5))));
+    let _layer_id = display.add_layer(Box::new(Toy::new("c", rect(0, 12, 5, 5))));
     let c3 = cells(&mut display);
     assert_eq!(c3.len(), 3);
     assert!(c3.contains(&b_cell), "a new layer must recycle b's freed slot");
@@ -574,7 +575,7 @@ fn underlay_paints_layer_color_behind_widget() {
     let color = display.layer_color(ids[0]).unwrap();
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| {
+    let _frame = terminal.draw(|f| {
         for entry in &frame {
             entry.widget.render_ref(entry.area, f.buffer_mut());
         }
@@ -608,11 +609,11 @@ fn on_active_fires_when_a_layer_becomes_topmost() {
 
     struct Active(Arc<AtomicU32>);
     impl DisplayLayer for Active {
-        fn on_overlay(&mut self, _c: &mut LayerCtx, _w: &mut Vec<WidgetEntry>) -> StackIntent {
+        fn on_overlay(&mut self, _c: &mut LayerCtx<'_>, _w: &mut Vec<WidgetEntry>) -> StackIntent {
             StackIntent::Keep
         }
         fn on_active(&mut self) {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            let _prev = self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -646,7 +647,7 @@ fn hide_when_empty_layers_keep_their_taskbar_slot() {
         fn hide_when_empty(&self) -> bool {
             true
         }
-        fn on_overlay(&mut self, _c: &mut LayerCtx, w: &mut Vec<WidgetEntry>) -> StackIntent {
+        fn on_overlay(&mut self, _c: &mut LayerCtx<'_>, w: &mut Vec<WidgetEntry>) -> StackIntent {
             if self.show.load(Ordering::SeqCst) {
                 w.push(widget("shy.pop", rect(0, 12, 5, 5)));
             }
@@ -656,10 +657,10 @@ fn hide_when_empty_layers_keep_their_taskbar_slot() {
 
     let show = Arc::new(AtomicBool::new(false));
     let mut display = Display::with_palette(palette_for(16));
-    display.add_layer(Box::new(Toy::new("a", rect(0, 0, 5, 5))));
+    let _layer_id = display.add_layer(Box::new(Toy::new("a", rect(0, 0, 5, 5))));
     let shy = display.add_layer(Box::new(Shy { show: show.clone() }));
 
-    let buttons = |display: &mut Display| {
+    let buttons = |display: &mut Display<'_>| {
         let mut frame = builtin_frame();
         display.frame(&mut frame);
         let mut cells: Vec<Rect> =
@@ -681,7 +682,7 @@ fn hide_when_empty_layers_keep_their_taskbar_slot() {
     // steal the shy layer's slot.
     show.store(false, Ordering::SeqCst);
     assert_eq!(buttons(&mut display).len(), 2);
-    display.add_layer(Box::new(Toy::new("c", rect(0, 16, 5, 5))));
+    let _layer_id = display.add_layer(Box::new(Toy::new("c", rect(0, 16, 5, 5))));
     let after = buttons(&mut display);
     assert_eq!(after.len(), 3, "c's button joins, shy stays hidden");
     // Four reserved slots now, so the centered strip start moves to
@@ -703,7 +704,7 @@ fn on_overlay_intents_move_layers_across_frames() {
 
     struct Intent(Arc<Mutex<StackIntent>>);
     impl DisplayLayer for Intent {
-        fn on_overlay(&mut self, _c: &mut LayerCtx, _w: &mut Vec<WidgetEntry>) -> StackIntent {
+        fn on_overlay(&mut self, _c: &mut LayerCtx<'_>, _w: &mut Vec<WidgetEntry>) -> StackIntent {
             *self.0.lock().unwrap()
         }
     }
@@ -741,9 +742,9 @@ fn raised_builtin_clears_lower_layers_behind_it() {
     // A layer covering the log area sits below; raising the builtin must
     // ERASE it (terminal-default background), not just draw text over it.
     let mut display = Display::with_palette(palette_for(16));
-    display.add_layer(Box::new(FillLayer { name: "bg.fill", area: rect(0, 0, 80, 21) }));
+    let _layer_id = display.add_layer(Box::new(FillLayer { name: "bg.fill", area: rect(0, 0, 80, 21) }));
 
-    let render = |display: &mut Display| {
+    let render = |display: &mut Display<'_>| {
         let mut frame = builtin_frame();
         display.frame(&mut frame);
         let mut buf = ratatui::buffer::Buffer::empty(rect(0, 0, 80, 24));

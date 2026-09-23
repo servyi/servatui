@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
+
 //! # servatui
 //!
 //! Generic server-client framework with TUI/CLI frontends.

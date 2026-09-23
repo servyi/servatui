@@ -5,6 +5,7 @@
 //! While open, the textbox swallows printable keys, Backspace, Enter and
 //! Esc — nothing reaches the input line. Enter commits the text into the
 //! title bar; the layer stays a taskbar/Shift+Tab target so `t` reopens it.
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::layout::Rect;
@@ -35,7 +36,7 @@ impl DisplayLayer for TextBox {
         'T'
     }
 
-    fn on_overlay(&mut self, ctx: &mut LayerCtx, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
+    fn on_overlay(&mut self, ctx: &mut LayerCtx<'_>, widgets: &mut Vec<WidgetEntry>) -> StackIntent {
         if !self.open {
                         return StackIntent::Keep;
         }
@@ -52,7 +53,7 @@ impl DisplayLayer for TextBox {
     StackIntent::Keep
 }
 
-    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx) -> EventResult {
+    fn on_event(&mut self, ev: &Event, _ctx: &LayerCtx<'_>) -> EventResult {
         let Event::Key(k) = ev else { return EventResult::Pass };
         if k.kind != KeyEventKind::Press {
             return EventResult::Pass;
@@ -69,7 +70,7 @@ impl DisplayLayer for TextBox {
                 EventResult::Swallow
             }
             KeyCode::Backspace => {
-                self.buffer.pop();
+                let _popped = self.buffer.pop();
                 EventResult::Swallow
             }
             KeyCode::Enter => {
@@ -89,7 +90,7 @@ impl DisplayLayer for TextBox {
 
 fn main() {
     let mut display = Display::new();
-    display.add_layer(Box::new(TextBox { open: true, buffer: String::new(), committed: None }));
+    let _layer_id = display.add_layer(Box::new(TextBox { open: true, buffer: String::new(), committed: None }));
 
     let protocols: Vec<Protocol> = vec![];
     display
