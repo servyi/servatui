@@ -216,7 +216,7 @@ fn csi_size_cached() -> Option<(u16, u16)> {
     use std::time::{Duration, Instant};
     type CsiCache = Option<(Instant, Option<(u16, u16)>)>;
     static CACHE: Mutex<CsiCache> = Mutex::new(None);
-    let mut guard = CACHE.lock().expect("CSI cache mutex poisoned");
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
     let stale = matches!(*guard, Some((t, _)) if now.duration_since(t) >= Duration::from_millis(500));
     if stale || guard.is_none() {
@@ -697,8 +697,7 @@ impl<'a> BuiltinTui<'a> {
     ///
     /// # Panics
     ///
-    /// Panics if the CSI cache mutex was poisoned by a panicking concurrent
-    /// user, or on internal invariant violation while navigating history.
+    /// Panics on internal invariant violation while navigating history.
     pub fn handle_event(&mut self, ev: &crossterm::event::Event) -> bool {
         use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
         use tui_input::backend::crossterm::EventHandler;
