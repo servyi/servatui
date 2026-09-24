@@ -90,7 +90,10 @@ fn spawn_under_pty(cmd: &str, typescript: &Path) -> std::process::Child {
         .expect("util-linux `script` is required for the pty tests")
 }
 
-fn poll_exit(child: &mut std::process::Child, deadline_ms: u128) -> Option<std::process::ExitStatus> {
+fn poll_exit(
+    child: &mut std::process::Child,
+    deadline_ms: u128,
+) -> Option<std::process::ExitStatus> {
     let mut status = None;
     let _done = wait_until(deadline_ms, || match child.try_wait() {
         Ok(Some(s)) => {
@@ -146,7 +149,10 @@ fn sigterm_restores_mouse_capture_and_alt_screen() {
     let alt_off = typescript_contains(&ts, b"\x1b[?1049l");
     cleanup(script);
 
-    assert!(exited.is_some(), "script session did not exit after SIGTERM");
+    assert!(
+        exited.is_some(),
+        "script session did not exit after SIGTERM"
+    );
     assert!(
         capture_off,
         "mouse capture not disabled on SIGTERM — terminal left with dead scroll wheel"

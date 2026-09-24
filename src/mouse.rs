@@ -5,7 +5,7 @@
 //! - Button released outside the window (detect via focus loss or reset)
 //! - Provides current state for rendering overlays/highlights
 
-use crossterm::event::{MouseEvent, MouseEventKind, MouseButton, KeyModifiers};
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 /// Tracks the current state of the mouse across frames.
 ///
@@ -71,8 +71,10 @@ impl MouseTracker {
                     self.moved_since_press = true;
                 }
             }
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-            | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+            MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight => {
                 // Scroll events update position but not button state
             }
             MouseEventKind::Moved => {
@@ -106,8 +108,7 @@ impl MouseTracker {
     /// True if the last click was a double-click (same position, < 500ms).
     pub fn is_double_click(&self) -> bool {
         if let Some(t) = self.last_down_time {
-            t.elapsed() < std::time::Duration::from_millis(500)
-                && self.last_down_pos == self.pos
+            t.elapsed() < std::time::Duration::from_millis(500) && self.last_down_pos == self.pos
         } else {
             false
         }
@@ -144,7 +145,8 @@ impl MouseTracker {
             if self.left { "●" } else { "○" },
             if self.right { "●" } else { "○" },
             if self.middle { "●" } else { "○" },
-            self.pos.0, self.pos.1,
+            self.pos.0,
+            self.pos.1,
         )
     }
 }

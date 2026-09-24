@@ -29,7 +29,8 @@ impl<T: RawConnection + ?Sized> TypedConnection for T {}
 
 /// Name of the running binary, for usage hints in error messages.
 fn current_bin_name() -> String {
-    std::env::args().next()
+    std::env::args()
+        .next()
         .map(|a| {
             std::path::Path::new(&a)
                 .file_name()
@@ -86,11 +87,7 @@ impl SocketConnection {
             ));
         }
         let stream = UnixStream::connect(path).map_err(|e| explain_connect_error(path, &e))?;
-        let reader = BufReader::new(
-            stream
-                .try_clone()
-                .map_err(|e| explain_io_error(&e))?,
-        );
+        let reader = BufReader::new(stream.try_clone().map_err(|e| explain_io_error(&e))?);
         Ok(Self { stream, reader })
     }
 
@@ -101,15 +98,22 @@ impl SocketConnection {
 
 impl RawConnection for SocketConnection {
     fn send_bytes(&mut self, data: &[u8]) -> Result<(), String> {
-        self.stream.write_all(data).map_err(|e| explain_io_error(&e))?;
-        self.stream.write_all(b"\n").map_err(|e| explain_io_error(&e))?;
+        self.stream
+            .write_all(data)
+            .map_err(|e| explain_io_error(&e))?;
+        self.stream
+            .write_all(b"\n")
+            .map_err(|e| explain_io_error(&e))?;
         self.stream.flush().map_err(|e| explain_io_error(&e))?;
         Ok(())
     }
 
     fn recv_bytes(&mut self) -> Result<Vec<u8>, String> {
         let mut line = String::new();
-        let n = self.reader.read_line(&mut line).map_err(|e| explain_io_error(&e))?;
+        let n = self
+            .reader
+            .read_line(&mut line)
+            .map_err(|e| explain_io_error(&e))?;
         if n == 0 {
             return Err("connection closed".into());
         }
@@ -128,11 +132,18 @@ pub struct TestEndpoint {
 // readable so the actual failure reports itself.
 impl RawConnection for TestEndpoint {
     fn send_bytes(&mut self, data: &[u8]) -> Result<(), String> {
-        self.outgoing.lock().unwrap_or_else(|e| e.into_inner()).push_back(data.to_vec());
+        self.outgoing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(data.to_vec());
         Ok(())
     }
     fn recv_bytes(&mut self) -> Result<Vec<u8>, String> {
-        self.incoming.lock().unwrap_or_else(|e| e.into_inner()).pop_front().ok_or("no data".into())
+        self.incoming
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
+            .ok_or("no data".into())
     }
 }
 

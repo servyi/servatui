@@ -1,18 +1,26 @@
 //! Integration test: start a real server, connect a client, verify response.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
+use serde::{Deserialize, Serialize};
 use servyi_servatui::*;
-use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize)]
-struct EchoArgs { text: String }
+struct EchoArgs {
+    text: String,
+}
 
 #[derive(Serialize, Deserialize)]
-struct EchoResult { text: String }
+struct EchoResult {
+    text: String,
+}
 
 fn make_echo_protocol() -> Protocol {
     Plugin::new("echo", "Echo text back")
-        .parse(|args: &str| Ok(EchoArgs { text: args.to_string() }))
+        .parse(|args: &str| {
+            Ok(EchoArgs {
+                text: args.to_string(),
+            })
+        })
         // Client: passthrough (send args to server)
         .client(|args: EchoArgs, _out, _input| Ok(args))
         // Server: echo
@@ -26,7 +34,9 @@ fn make_echo_protocol() -> Protocol {
 }
 
 #[derive(Serialize, Deserialize)]
-struct PingResult { message: String }
+struct PingResult {
+    message: String,
+}
 
 fn make_ping_protocol() -> Protocol {
     Plugin::new("ping", "Ping the server")
@@ -34,7 +44,11 @@ fn make_ping_protocol() -> Protocol {
         // Client: send empty
         .client(|_: (), _out, _input| Ok(()))
         // Server: respond
-        .server(|_: ()| Ok(PingResult { message: "pong".into() }))
+        .server(|_: ()| {
+            Ok(PingResult {
+                message: "pong".into(),
+            })
+        })
         // Client: render
         .client(|result: PingResult, out, _input| {
             out.print_line(&result.message);
@@ -60,13 +74,13 @@ fn test_echo_end_to_end() {
         socket: server_socket,
         protocols: server_protocols,
     };
-    let _server_thread = std::thread::spawn(move || {
-        server_handle.run(std::sync::Arc::new(()))
-    });
+    let _server_thread = std::thread::spawn(move || server_handle.run(std::sync::Arc::new(())));
 
     // Wait for server to start
     for _ in 0..100 {
-        if app.server_running() { break; }
+        if app.server_running() {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(app.server_running(), "Server did not start");
@@ -89,21 +103,19 @@ fn test_unknown_command() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("test2.sock");
 
-    let app = App::builder(&socket)
-        .protocol(make_echo_protocol())
-        .build();
+    let app = App::builder(&socket).protocol(make_echo_protocol()).build();
 
     let server_protocols = vec![make_echo_protocol()];
     let server_handle = ServerHandle {
         socket: socket.clone(),
         protocols: server_protocols,
     };
-    let _server_thread = std::thread::spawn(move || {
-        server_handle.run(std::sync::Arc::new(()))
-    });
+    let _server_thread = std::thread::spawn(move || server_handle.run(std::sync::Arc::new(())));
 
     for _ in 0..100 {
-        if app.server_running() { break; }
+        if app.server_running() {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 

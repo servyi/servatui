@@ -8,12 +8,16 @@ fn main() {
     let cols = std::env::var("COLUMNS").unwrap_or_else(|_| "<not set>".into());
     let lines = std::env::var("LINES").unwrap_or_else(|_| "<not set>".into());
     let stty = std::process::Command::new("stty").arg("size").output();
-    let stty_str = stty.ok()
+    let stty_str = stty
+        .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_else(|| "<failed>".into());
 
     println!("=== Before raw mode ===");
-    println!("crossterm::terminal::size(): {:?}", crossterm::terminal::size());
+    println!(
+        "crossterm::terminal::size(): {:?}",
+        crossterm::terminal::size()
+    );
     println!("stty size: {}", stty_str.trim());
     println!("$COLUMNS={}", cols);
     println!("$LINES={}", lines);
@@ -23,9 +27,10 @@ fn main() {
     println!();
 
     // Enter raw mode + alternate screen (same as TUI does)
-    crossterm::terminal::enable_raw_mode().expect("raw mode for the diagnostic");
+    crossterm::terminal::enable_raw_mode()
+        .expect("terminal diagnostic: nothing to report without a real tty");
     crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)
-        .expect("enter alternate screen");
+        .expect("terminal diagnostic: nothing to report without a real tty");
     let _flushed = std::io::stdout().flush().ok();
 
     let size_after = crossterm::terminal::size();
@@ -39,12 +44,16 @@ fn main() {
     eprintln!("$LINES={}", lines_after);
 
     // Exit
-    let _res = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen).ok();
+    let _res =
+        crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen).ok();
     let _res = crossterm::terminal::disable_raw_mode().ok();
 
     println!();
     println!("=== After exit ===");
-    println!("crossterm::terminal::size(): {:?}", crossterm::terminal::size());
+    println!(
+        "crossterm::terminal::size(): {:?}",
+        crossterm::terminal::size()
+    );
 }
 
 fn isatty(fd: i32) -> bool {

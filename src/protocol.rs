@@ -32,10 +32,18 @@ type OfflineFn = Arc<dyn Fn(&str, &mut dyn Console) -> Result<(), String> + Send
 // ═══════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShellAction { Continue, Exit }
+pub enum ShellAction {
+    Continue,
+    Exit,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StepKind { Client, Server, ServerCtx, Finalize }
+enum StepKind {
+    Client,
+    Server,
+    ServerCtx,
+    Finalize,
+}
 
 /// Type-erased step stored in a Vec. NOT parameterized by Ctx so that
 /// all steps share the same `Box<dyn ErasedStep>` Vec.
@@ -43,7 +51,12 @@ enum StepKind { Client, Server, ServerCtx, Finalize }
 trait ErasedStep: Send + Sync {
     fn kind(&self) -> StepKind;
 
-    fn client_exec(&self, input: &[u8], out: &mut dyn Console, input_src: &mut dyn InputSource) -> Result<Vec<u8>, String>;
+    fn client_exec(
+        &self,
+        input: &[u8],
+        out: &mut dyn Console,
+        input_src: &mut dyn InputSource,
+    ) -> Result<Vec<u8>, String>;
     fn server_exec(&self, input: &[u8], ctx: &dyn Any) -> Result<Vec<u8>, String>;
 }
 
@@ -51,7 +64,10 @@ trait ErasedStep: Send + Sync {
 // Concrete step implementations
 // ═══════════════════════════════════════════════════════════════
 
-struct ClientStepE<T, U, F> { closure: F, _ph: PhantomData<fn(T, U)> }
+struct ClientStepE<T, U, F> {
+    closure: F,
+    _ph: PhantomData<fn(T, U)>,
+}
 
 impl<T, U, F> ErasedStep for ClientStepE<T, U, F>
 where
@@ -59,8 +75,15 @@ where
     U: Serialize + DeserializeOwned + Send + Sync + 'static,
     F: Fn(T, &mut dyn Console, &mut dyn InputSource) -> Result<U, String> + Send + Sync + 'static,
 {
-    fn kind(&self) -> StepKind { StepKind::Client }
-    fn client_exec(&self, input: &[u8], out: &mut dyn Console, input_src: &mut dyn InputSource) -> Result<Vec<u8>, String> {
+    fn kind(&self) -> StepKind {
+        StepKind::Client
+    }
+    fn client_exec(
+        &self,
+        input: &[u8],
+        out: &mut dyn Console,
+        input_src: &mut dyn InputSource,
+    ) -> Result<Vec<u8>, String> {
         let data: T = serde_json::from_slice(input).map_err(|e| e.to_string())?;
         let result: U = (self.closure)(data, out, input_src)?;
         serde_json::to_vec(&result).map_err(|e| e.to_string())
@@ -71,7 +94,10 @@ where
 }
 
 /// Stateless server step — closure takes only the request, ignores context.
-struct ServerStepE<T, U, F> { closure: F, _ph: PhantomData<fn(T, U)> }
+struct ServerStepE<T, U, F> {
+    closure: F,
+    _ph: PhantomData<fn(T, U)>,
+}
 
 impl<T, U, F> ErasedStep for ServerStepE<T, U, F>
 where
@@ -79,8 +105,15 @@ where
     U: Serialize + DeserializeOwned + Send + Sync + 'static,
     F: Fn(T) -> Result<U, String> + Send + Sync + 'static,
 {
-    fn kind(&self) -> StepKind { StepKind::Server }
-    fn client_exec(&self, _input: &[u8], _out: &mut dyn Console, _input_src: &mut dyn InputSource) -> Result<Vec<u8>, String> {
+    fn kind(&self) -> StepKind {
+        StepKind::Server
+    }
+    fn client_exec(
+        &self,
+        _input: &[u8],
+        _out: &mut dyn Console,
+        _input_src: &mut dyn InputSource,
+    ) -> Result<Vec<u8>, String> {
         unreachable!("client_exec called on server step")
     }
     fn server_exec(&self, input: &[u8], _ctx: &dyn Any) -> Result<Vec<u8>, String> {
@@ -92,7 +125,10 @@ where
 
 /// Contextual server step — closure takes request + shared `&Ctx`.
 /// Downcasts `&dyn Any` to the concrete Ctx type at runtime.
-struct ServerCtxStepE<T, U, F, Ctx> { closure: F, _ph: PhantomData<fn(T, U, Ctx)> }
+struct ServerCtxStepE<T, U, F, Ctx> {
+    closure: F,
+    _ph: PhantomData<fn(T, U, Ctx)>,
+}
 
 impl<T, U, F, Ctx> ErasedStep for ServerCtxStepE<T, U, F, Ctx>
 where
@@ -101,8 +137,15 @@ where
     F: Fn(T, &Ctx) -> Result<U, String> + Send + Sync + 'static,
     Ctx: 'static,
 {
-    fn kind(&self) -> StepKind { StepKind::ServerCtx }
-    fn client_exec(&self, _input: &[u8], _out: &mut dyn Console, _input_src: &mut dyn InputSource) -> Result<Vec<u8>, String> {
+    fn kind(&self) -> StepKind {
+        StepKind::ServerCtx
+    }
+    fn client_exec(
+        &self,
+        _input: &[u8],
+        _out: &mut dyn Console,
+        _input_src: &mut dyn InputSource,
+    ) -> Result<Vec<u8>, String> {
         unreachable!("client_exec called on server step")
     }
     fn server_exec(&self, input: &[u8], ctx: &dyn Any) -> Result<Vec<u8>, String> {
@@ -113,14 +156,23 @@ where
     }
 }
 
-struct FinalizeStepE<F> { closure: F }
+struct FinalizeStepE<F> {
+    closure: F,
+}
 
 impl<F> ErasedStep for FinalizeStepE<F>
 where
     F: Fn() -> Result<ShellAction, String> + Send + Sync + 'static,
 {
-    fn kind(&self) -> StepKind { StepKind::Finalize }
-    fn client_exec(&self, _input: &[u8], _out: &mut dyn Console, _input_src: &mut dyn InputSource) -> Result<Vec<u8>, String> {
+    fn kind(&self) -> StepKind {
+        StepKind::Finalize
+    }
+    fn client_exec(
+        &self,
+        _input: &[u8],
+        _out: &mut dyn Console,
+        _input_src: &mut dyn InputSource,
+    ) -> Result<Vec<u8>, String> {
         let _action = (self.closure)();
         Ok(Vec::new())
     }
@@ -142,7 +194,10 @@ impl Plugin {
     }
 }
 
-pub struct ParseBuilder { name: &'static str, help: &'static str }
+pub struct ParseBuilder {
+    name: &'static str,
+    help: &'static str,
+}
 
 impl ParseBuilder {
     pub fn parse<T, F>(self, parse: F) -> Client<T>
@@ -150,11 +205,10 @@ impl ParseBuilder {
         T: Serialize + DeserializeOwned + Send + Sync + 'static,
         F: Fn(&str) -> Result<T, String> + Send + Sync + 'static,
     {
-        let parse_bytes: ParseFn =
-            Arc::new(move |s: &str| {
-                let t: T = parse(s)?;
-                serde_json::to_vec(&t).map_err(|e| e.to_string())
-            });
+        let parse_bytes: ParseFn = Arc::new(move |s: &str| {
+            let t: T = parse(s)?;
+            serde_json::to_vec(&t).map_err(|e| e.to_string())
+        });
         Client {
             name: self.name,
             help: self.help,
@@ -185,12 +239,21 @@ where
     pub fn client<U, F>(mut self, f: F) -> Server<U>
     where
         U: Serialize + DeserializeOwned + Send + Sync + 'static,
-        F: Fn(T, &mut dyn Console, &mut dyn InputSource) -> Result<U, String> + Send + Sync + 'static,
+        F: Fn(T, &mut dyn Console, &mut dyn InputSource) -> Result<U, String>
+            + Send
+            + Sync
+            + 'static,
     {
-        self.steps.push(Box::new(ClientStepE::<T, U, F> { closure: f, _ph: PhantomData }));
+        self.steps.push(Box::new(ClientStepE::<T, U, F> {
+            closure: f,
+            _ph: PhantomData,
+        }));
         Server {
-            name: self.name, help: self.help, parse: self.parse,
-            steps: self.steps, _ph: PhantomData,
+            name: self.name,
+            help: self.help,
+            parse: self.parse,
+            steps: self.steps,
+            _ph: PhantomData,
         }
     }
 
@@ -200,8 +263,10 @@ where
     {
         self.steps.push(Box::new(FinalizeStepE { closure: f }));
         Protocol {
-            name: self.name, help: self.help,
-            parse: self.parse, steps: self.steps,
+            name: self.name,
+            help: self.help,
+            parse: self.parse,
+            steps: self.steps,
             offline: None,
             completer: None,
         }
@@ -229,10 +294,16 @@ where
         U: Serialize + DeserializeOwned + Send + Sync + 'static,
         F: Fn(T) -> Result<U, String> + Send + Sync + 'static,
     {
-        self.steps.push(Box::new(ServerStepE::<T, U, F> { closure: f, _ph: PhantomData }));
+        self.steps.push(Box::new(ServerStepE::<T, U, F> {
+            closure: f,
+            _ph: PhantomData,
+        }));
         Client {
-            name: self.name, help: self.help, parse: self.parse,
-            steps: self.steps, _ph: PhantomData,
+            name: self.name,
+            help: self.help,
+            parse: self.parse,
+            steps: self.steps,
+            _ph: PhantomData,
         }
     }
 
@@ -246,10 +317,16 @@ where
         Ctx: 'static,
         F: Fn(T, &Ctx) -> Result<U, String> + Send + Sync + 'static,
     {
-        self.steps.push(Box::new(ServerCtxStepE::<T, U, F, Ctx> { closure: f, _ph: PhantomData }));
+        self.steps.push(Box::new(ServerCtxStepE::<T, U, F, Ctx> {
+            closure: f,
+            _ph: PhantomData,
+        }));
         Client {
-            name: self.name, help: self.help, parse: self.parse,
-            steps: self.steps, _ph: PhantomData,
+            name: self.name,
+            help: self.help,
+            parse: self.parse,
+            steps: self.steps,
+            _ph: PhantomData,
         }
     }
 
@@ -259,8 +336,10 @@ where
     {
         self.steps.push(Box::new(FinalizeStepE { closure: f }));
         Protocol {
-            name: self.name, help: self.help,
-            parse: self.parse, steps: self.steps,
+            name: self.name,
+            help: self.help,
+            parse: self.parse,
+            steps: self.steps,
             offline: None,
             completer: None,
         }
@@ -377,18 +456,16 @@ impl Protocol {
                 StepKind::Client => {
                     data = conn.recv_bytes()?;
                 }
-                StepKind::Server | StepKind::ServerCtx => {
-                    match step.server_exec(&data, ctx) {
-                        Ok(output) => {
-                            conn.send_bytes(&output)?;
-                            data = output;
-                        }
-                        Err(e) => {
-                            let _ = conn.send_typed(&serde_json::json!({"__error__": e}));
-                            return Err(e);
-                        }
+                StepKind::Server | StepKind::ServerCtx => match step.server_exec(&data, ctx) {
+                    Ok(output) => {
+                        conn.send_bytes(&output)?;
+                        data = output;
                     }
-                }
+                    Err(e) => {
+                        let _ = conn.send_typed(&serde_json::json!({"__error__": e}));
+                        return Err(e);
+                    }
+                },
                 StepKind::Finalize => {
                     let _sentinel: () = conn.recv_typed()?;
                     return Ok(());

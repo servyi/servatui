@@ -93,5 +93,5 @@ fn main() {
     let protocols: Vec<Protocol> = vec![];
     display
         .run("/tmp/servatui-display-textbox-demo.sock".as_ref(), &protocols)
-        .expect("display run");
+        .expect("demo: no fallback if the display server dies");
 }
