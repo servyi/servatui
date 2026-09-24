@@ -123,6 +123,9 @@ pub struct TestEndpoint {
     pub outgoing: std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>,
 }
 
+// Test-support endpoint (used by tests and examples): a poisoned lock
+// means some other thread's test already panicked; the queues stay
+// readable so the actual failure reports itself.
 impl RawConnection for TestEndpoint {
     fn send_bytes(&mut self, data: &[u8]) -> Result<(), String> {
         self.outgoing.lock().unwrap_or_else(|e| e.into_inner()).push_back(data.to_vec());

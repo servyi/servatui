@@ -216,6 +216,10 @@ fn csi_size_cached() -> Option<(u16, u16)> {
     use std::time::{Duration, Instant};
     type CsiCache = Option<(Instant, Option<(u16, u16)>)>;
     static CACHE: Mutex<CsiCache> = Mutex::new(None);
+    // into_inner is sound: query_csi_18t runs under the lock but only
+    // replaces the cache entry WHOLE — a panic inside it cannot leave the
+    // Option half-written, so the worst case is a stale entry (one extra
+    // terminal probe next call).
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
     let stale = matches!(*guard, Some((t, _)) if now.duration_since(t) >= Duration::from_millis(500));
