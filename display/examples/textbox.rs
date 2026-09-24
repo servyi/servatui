@@ -5,8 +5,6 @@
 //! While open, the textbox swallows printable keys, Backspace, Enter and
 //! Esc — nothing reaches the input line. Enter commits the text into the
 //! title bar; the layer stays a taskbar/Shift+Tab target so `t` reopens it.
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -95,5 +93,5 @@ fn main() {
     let protocols: Vec<Protocol> = vec![];
     display
         .run("/tmp/servatui-display-textbox-demo.sock".as_ref(), &protocols)
-        .unwrap();
+        .expect("display run");
 }

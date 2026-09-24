@@ -7,8 +7,6 @@
 //! - clicking outside a popup's visible box closes it (full-screen modal)
 //! - Shift+Tab rotates through the layers; the taskbar cells are clickable
 //! - typing `exit` still works: keys no popup swallows reach the input line
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders};
@@ -101,5 +99,5 @@ fn main() {
     let protocols: Vec<Protocol> = vec![];
     display
         .run("/tmp/servatui-display-popup-demo.sock".as_ref(), &protocols)
-        .unwrap();
+        .expect("display run");
 }

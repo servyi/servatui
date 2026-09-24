@@ -2,8 +2,6 @@
 //!
 //! Run as server: `cargo run --example echo -- serve /tmp/echo.sock`
 //! Run as client: `cargo run --example echo -- /tmp/echo.sock`
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use serde::{Deserialize, Serialize};
 use servyi_servatui::*;
 use std::env;

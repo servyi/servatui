@@ -5,8 +5,6 @@
 //! panic during rendering.
 //!
 //! Run: cargo run --features tui --example panic-smoke -- /tmp/x.sock
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let socket = args
@@ -23,11 +21,20 @@ fn main() {
             .client(|_: (), _, _| Ok(()))
             .finalize(|| Ok(servyi_servatui::ShellAction::Continue));
         servyi_servatui::run_tui_with_overlay(
-            &std::path::PathBuf::from(socket),
+            &std::path::PathBuf::from(&socket),
             &[protocol],
-            |_| panic!("panic-smoke: intentional panic during TUI render"),
+            // Deliberate: this example exists to prove the terminal is
+            // restored even when rendering panics. The socket path is
+            // never a valid u32, so this expect — the policy's sanctioned
+            // loud failure — always fires during the first render, and
+            // unwinds through the exact same path a real panic would.
+            |_| {
+                let _ = socket
+                    .parse::<u32>()
+                    .expect("panic-smoke: intentional panic during TUI render");
+            },
         )
-        .unwrap();
+        .expect("panic-smoke: run_tui_with_overlay returns after the restore hook ran");
     }
     #[cfg(not(feature = "tui"))]
     {

@@ -3,8 +3,6 @@
 //!
 //! Run as server: `cargo run --example lorem -- serve /tmp/lorem.sock`
 //! Run as client: `cargo run --example lorem -- /tmp/lorem.sock`
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use serde::{Deserialize, Serialize};
 use servyi_servatui::*;
 use std::env;

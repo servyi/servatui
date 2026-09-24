@@ -4,8 +4,6 @@
 //!
 //! Follow on-screen instructions. The mouse position is highlighted in real-time.
 //! Button states shown in footer. Press 'q' to quit and dump events.
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEventKind, MouseEvent, MouseEventKind, EnableMouseCapture, DisableMouseCapture};

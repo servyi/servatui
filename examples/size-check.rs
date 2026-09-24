@@ -1,8 +1,6 @@
 //! Terminal size diagnostic.
 //!
 //! Run: cargo run --example size-check --features tui
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use std::io::Write;
 
 fn main() {
@@ -25,8 +23,9 @@ fn main() {
     println!();
 
     // Enter raw mode + alternate screen (same as TUI does)
-    crossterm::terminal::enable_raw_mode().unwrap();
-    crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen).unwrap();
+    crossterm::terminal::enable_raw_mode().expect("raw mode for the diagnostic");
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)
+        .expect("enter alternate screen");
     let _flushed = std::io::stdout().flush().ok();
 
     let size_after = crossterm::terminal::size();

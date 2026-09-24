@@ -21,8 +21,6 @@
 //! clicking either raises it above the other, and Shift+Tab rotates the
 //! stacking. The numbers layer hides its taskbar button while nothing
 //! is pending.
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -45,7 +43,9 @@ fn numbers_protocol() -> Protocol {
     Plugin::new("numbers", "All numbers generated so far")
         .parse(|_args: &str| Ok(()))
         .client(|req: (), _out, _input| Ok(req))
-        .server_ctx(|_req: (), ctx: &Mutex<Vec<u32>>| Ok(ctx.lock().unwrap().clone()))
+        .server_ctx(|_req: (), ctx: &Mutex<Vec<u32>>| {
+            Ok(ctx.lock().expect("numbers state lock: pure ops only").clone())
+        })
         .client(|nums: Vec<u32>, out, _input| {
             for n in &nums {
                 out.print_line(&n.to_string());
@@ -323,7 +323,7 @@ fn main() {
         let _generator = std::thread::spawn(move || {
             let mut state = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .expect("the clock is past the UNIX epoch")
                 .as_nanos() as u64
                 | 1;
             loop {
@@ -331,7 +331,7 @@ fn main() {
                 state ^= state << 13;
                 state ^= state >> 7;
                 state ^= state << 17;
-                numbers.lock().unwrap().push((state >> 32) as u32);
+                numbers.lock().expect("numbers state lock: pure ops only").push((state >> 32) as u32);
             }
         });
     }

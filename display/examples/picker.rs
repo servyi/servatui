@@ -5,8 +5,6 @@
 //! The picker is a plain [`DisplayLayer`]: while open it swallows the
 //! navigation keys, so they never reach the input line. The title bar shows
 //! the committed choice.
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -111,5 +109,5 @@ fn main() {
     let protocols: Vec<Protocol> = vec![];
     display
         .run("/tmp/servatui-display-picker-demo.sock".as_ref(), &protocols)
-        .unwrap();
+        .expect("display run");
 }
