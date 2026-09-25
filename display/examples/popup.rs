@@ -97,7 +97,9 @@ fn main() {
     }));
 
     let protocols: Vec<Protocol> = vec![];
-    display
-        .run("/tmp/servatui-display-popup-demo.sock".as_ref(), &protocols)
-        .expect("demo: no fallback if the display server dies");
+    let result = display.run("/tmp/servatui-display-popup-demo.sock".as_ref(), &protocols);
+    if let Err(e) = result {
+        eprintln!("display server error: {e}");
+        std::process::exit(1);
+    }
 }

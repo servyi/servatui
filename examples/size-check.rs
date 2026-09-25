@@ -3,7 +3,7 @@
 //! Run: cargo run --example size-check --features tui
 use std::io::Write;
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Before raw mode
     let cols = std::env::var("COLUMNS").unwrap_or_else(|_| "<not set>".into());
     let lines = std::env::var("LINES").unwrap_or_else(|_| "<not set>".into());
@@ -27,10 +27,8 @@ fn main() {
     println!();
 
     // Enter raw mode + alternate screen (same as TUI does)
-    crossterm::terminal::enable_raw_mode()
-        .expect("terminal diagnostic: nothing to report without a real tty");
-    crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)
-        .expect("terminal diagnostic: nothing to report without a real tty");
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
     let _flushed = std::io::stdout().flush().ok();
 
     let size_after = crossterm::terminal::size();
@@ -54,6 +52,7 @@ fn main() {
         "crossterm::terminal::size(): {:?}",
         crossterm::terminal::size()
     );
+    Ok(())
 }
 
 fn isatty(fd: i32) -> bool {
