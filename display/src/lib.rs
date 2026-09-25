@@ -344,9 +344,17 @@ impl<'a> Display<'a> {
 
     /// Drain the log sink into the builtin log (called once per frame by
     /// [`Display::run`]); also usable directly in tests.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the log sink lock is poisoned — only pure drain ops run
+    /// under it, so poisoning would mean a lock discipline was broken
+    /// elsewhere.
     pub fn drain_log_sink(&mut self) {
         let Some(sink) = &self.log_sink else { return };
-        let mut pending = sink.lock().unwrap_or_else(|e| e.into_inner());
+        // Only pure drain/collect ops run under the sink lock — nothing
+        // can panic while holding it, so it cannot be poisoned.
+        let mut pending = sink.lock().expect("log sink lock: pure ops only");
         if pending.is_empty() {
             return;
         }

@@ -12,8 +12,8 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::console::Console;
 use crate::connection::{SocketConnection, TypedConnection};
+use crate::console::Console;
 use crate::protocol::Protocol;
 use tui_input::Input;
 
@@ -67,7 +67,9 @@ pub struct TuiState {
 }
 
 impl Default for TuiState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TuiState {
@@ -85,7 +87,11 @@ impl TuiState {
 
 /// Selection mode based on click count.
 #[derive(Clone, Copy, PartialEq)]
-enum ClickMode { Char, Word, Line }
+enum ClickMode {
+    Char,
+    Word,
+    Line,
+}
 
 /// Tracks mouse interaction state across frames.
 ///
@@ -163,7 +169,9 @@ fn terminal_size_from_env() -> Option<(u16, u16)> {
 fn parse_terminal_size(cols: &str, lines: &str) -> Option<(u16, u16)> {
     let w: u16 = cols.parse().ok()?;
     let h: u16 = lines.parse().ok()?;
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
     Some((w, h))
 }
 
@@ -187,7 +195,11 @@ fn query_csi_18t() -> Option<(u16, u16)> {
     let _ = tty.flush();
 
     // Wait briefly for the reply (terminals answer in a few ms).
-    let mut pfd = libc::pollfd { fd: tty.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    let mut pfd = libc::pollfd {
+        fd: tty.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
     let nfds = 1;
     let timeout_ms = 15;
     // SAFETY: `pfd` refers to the open tty file descriptor and is only
@@ -216,9 +228,14 @@ fn csi_size_cached() -> Option<(u16, u16)> {
     use std::time::{Duration, Instant};
     type CsiCache = Option<(Instant, Option<(u16, u16)>)>;
     static CACHE: Mutex<CsiCache> = Mutex::new(None);
+    // into_inner is sound: query_csi_18t runs under the lock but only
+    // replaces the cache entry WHOLE — a panic inside it cannot leave the
+    // Option half-written, so the worst case is a stale entry (one extra
+    // terminal probe next call).
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
-    let stale = matches!(*guard, Some((t, _)) if now.duration_since(t) >= Duration::from_millis(500));
+    let stale =
+        matches!(*guard, Some((t, _)) if now.duration_since(t) >= Duration::from_millis(500));
     if stale || guard.is_none() {
         *guard = Some((now, query_csi_18t()));
     }
@@ -258,16 +275,27 @@ impl<B: ratatui::backend::Backend> ratatui::backend::Backend for SizeOverrideBac
     {
         self.inner.draw(content)
     }
-    fn append_lines(&mut self, n: u16) -> std::io::Result<()> { self.inner.append_lines(n) }
-    fn hide_cursor(&mut self) -> std::io::Result<()> { self.inner.hide_cursor() }
-    fn show_cursor(&mut self) -> std::io::Result<()> { self.inner.show_cursor() }
+    fn append_lines(&mut self, n: u16) -> std::io::Result<()> {
+        self.inner.append_lines(n)
+    }
+    fn hide_cursor(&mut self) -> std::io::Result<()> {
+        self.inner.hide_cursor()
+    }
+    fn show_cursor(&mut self) -> std::io::Result<()> {
+        self.inner.show_cursor()
+    }
     fn get_cursor_position(&mut self) -> std::io::Result<ratatui::layout::Position> {
         self.inner.get_cursor_position()
     }
-    fn set_cursor_position<P: Into<ratatui::layout::Position>>(&mut self, pos: P) -> std::io::Result<()> {
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+        &mut self,
+        pos: P,
+    ) -> std::io::Result<()> {
         self.inner.set_cursor_position(pos)
     }
-    fn clear(&mut self) -> std::io::Result<()> { self.inner.clear() }
+    fn clear(&mut self) -> std::io::Result<()> {
+        self.inner.clear()
+    }
     fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> std::io::Result<()> {
         self.inner.clear_region(clear_type)
     }
@@ -278,13 +306,15 @@ impl<B: ratatui::backend::Backend> ratatui::backend::Backend for SizeOverrideBac
     fn window_size(&mut self) -> std::io::Result<ratatui::backend::WindowSize> {
         self.inner.window_size()
     }
-    fn flush(&mut self) -> std::io::Result<()> { self.inner.flush() }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// Copy text to clipboard via OSC 52 escape sequence.
 /// No-op when stdout is not a terminal (e.g. piped output, test harnesses).
 fn osc52_copy(text: &str) {
-    use base64::{Engine, engine::general_purpose};
+    use base64::{engine::general_purpose, Engine};
     use std::io::IsTerminal;
     if !std::io::stdout().is_terminal() {
         return;
@@ -386,10 +416,17 @@ fn orig_col(wrapped: &[String], offsets: &[usize], row: usize, display_col: usiz
 pub fn extract_selection(
     wrapped: &[String],
     offsets: &[usize],
-    sr: usize, sc: usize, er: usize, ec: usize,
+    sr: usize,
+    sc: usize,
+    er: usize,
+    ec: usize,
     rect: bool,
 ) -> String {
-    let (sr, sc, er, ec) = if (sr, sc) > (er, ec) { (er, ec, sr, sc) } else { (sr, sc, er, ec) };
+    let (sr, sc, er, ec) = if (sr, sc) > (er, ec) {
+        (er, ec, sr, sc)
+    } else {
+        (sr, sc, er, ec)
+    };
     let mut result = String::new();
 
     if rect {
@@ -400,7 +437,9 @@ pub fn extract_selection(
         // line, preserving the box's shape.
         let (cmin, cmax) = (sc.min(ec), sc.max(ec));
         for row in sr..=er {
-            if row >= wrapped.len() { break; }
+            if row >= wrapped.len() {
+                break;
+            }
             let (content, _) = row_content(&wrapped[row]);
             let chars: Vec<char> = content.chars().collect();
             let off = offsets.get(row).copied().unwrap_or(0);
@@ -415,17 +454,32 @@ pub fn extract_selection(
         }
     } else {
         for row in sr..=er {
-            if row >= wrapped.len() { break; }
+            if row >= wrapped.len() {
+                break;
+            }
             let (content, indent) = row_content(&wrapped[row]);
             let chars: Vec<char> = content.chars().collect();
-            let col_start = if row == sr { sc.saturating_sub(indent).min(chars.len()) } else { 0 };
-            let col_end = if row == er { ec.saturating_sub(indent).min(chars.len()) } else { chars.len() };
-            if col_start < col_end { result.extend(&chars[col_start..col_end]); }
+            let col_start = if row == sr {
+                sc.saturating_sub(indent).min(chars.len())
+            } else {
+                0
+            };
+            let col_end = if row == er {
+                ec.saturating_sub(indent).min(chars.len())
+            } else {
+                chars.len()
+            };
+            if col_start < col_end {
+                result.extend(&chars[col_start..col_end]);
+            }
             if row < er {
                 // A continuation row is the same original line, wrapped: reinsert
                 // the space textwrap consumed at the break. A non-continuation row
                 // is a different original line → newline.
-                let next_cont = wrapped.get(row + 1).map(|l| l.starts_with("↪ ")).unwrap_or(false);
+                let next_cont = wrapped
+                    .get(row + 1)
+                    .map(|l| l.starts_with("↪ "))
+                    .unwrap_or(false);
                 result.push(if next_cont { ' ' } else { '\n' });
             }
         }
@@ -466,22 +520,33 @@ impl ratatui::widgets::WidgetRef for LogWidget {
             .title(self.title.as_str())
             .render(area, buf);
 
-        let inner = area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+        let inner = area.inner(ratatui::layout::Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
 
         // Selection in ordered form (top-left to bottom-right)
         let sel = self.selection.map(|(sr, sc, er, ec)| {
-            if (sr, sc) > (er, ec) { (er, ec, sr, sc) } else { (sr, sc, er, ec) }
+            if (sr, sc) > (er, ec) {
+                (er, ec, sr, sc)
+            } else {
+                (sr, sc, er, ec)
+            }
         });
 
         for (row, line) in self.lines.iter().enumerate() {
-            if row >= inner.height as usize { break; }
+            if row >= inner.height as usize {
+                break;
+            }
             let content_row = self.viewport_start + row;
             let is_cont = line.starts_with("↪ ");
             let y = inner.y + row as u16;
             let chars: Vec<char> = line.chars().collect();
 
             for (col, ch) in chars.iter().enumerate() {
-                if col >= inner.width as usize { break; }
+                if col >= inner.width as usize {
+                    break;
+                }
                 let x = inner.x + col as u16;
 
                 // Check selection using content_row directly (no viewport translation needed)
@@ -505,11 +570,17 @@ impl ratatui::widgets::WidgetRef for LogWidget {
                         }
                     }
                     Some((sr, sc, er, ec)) => {
-                        if content_row > sr && content_row < er { true }
-                        else if content_row == sr && content_row == er { col >= sc && col < ec }
-                        else if content_row == sr { col >= sc }
-                        else if content_row == er { col < ec }
-                        else { false }
+                        if content_row > sr && content_row < er {
+                            true
+                        } else if content_row == sr && content_row == er {
+                            col >= sc && col < ec
+                        } else if content_row == sr {
+                            col >= sc
+                        } else if content_row == er {
+                            col < ec
+                        } else {
+                            false
+                        }
                     }
                     None => false,
                 };
@@ -517,7 +588,8 @@ impl ratatui::widgets::WidgetRef for LogWidget {
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     let _cell = cell.set_char(*ch);
                     if is_selected {
-                        let _cell = cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                        let _cell =
+                            cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
                     } else if is_cont && col < 2 {
                         let _cell = cell.set_style(gray);
                     }
@@ -575,7 +647,11 @@ where
     G: FnMut(&crossterm::event::Event) -> bool,
 {
     let builtin = BuiltinTui::new(socket, protocols);
-    run_tui_managed(std::rc::Rc::new(std::cell::RefCell::new(builtin)), on_overlay, on_event)
+    run_tui_managed(
+        std::rc::Rc::new(std::cell::RefCell::new(builtin)),
+        on_overlay,
+        on_event,
+    )
 }
 
 /// Like [`run_tui_with_events`], but the caller supplies the (shared)
@@ -591,9 +667,9 @@ where
     F: FnMut(&mut Vec<WidgetEntry>),
     G: FnMut(&crossterm::event::Event) -> bool,
 {
+    use crossterm::event::EnableMouseCapture;
     use crossterm::execute;
     use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
-    use crossterm::event::EnableMouseCapture;
     use ratatui::{backend::CrosstermBackend, Terminal};
 
     // Restore on every abnormal path (signals, panics) — not just the
@@ -602,16 +678,22 @@ where
     let _guard = crate::terminal_restore::TerminalGuard::install();
 
     enable_raw_mode().map_err(|e| e.to_string())?;
-    execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture).map_err(|e| e.to_string())?;
+    execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+        .map_err(|e| e.to_string())?;
     let _flushed = std::io::stdout().flush().ok();
 
-    let backend = SizeOverrideBackend { inner: CrosstermBackend::new(std::io::stdout()) };
+    let backend = SizeOverrideBackend {
+        inner: CrosstermBackend::new(std::io::stdout()),
+    };
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
 
     let result = tui_loop(
         &mut terminal,
         builtin.as_ref(),
-        &mut TuiHooks { on_overlay: &mut on_overlay, on_event: &mut on_event },
+        &mut TuiHooks {
+            on_overlay: &mut on_overlay,
+            on_event: &mut on_event,
+        },
     );
 
     // The guard's Drop also restores (idempotent) — this explicit call
@@ -687,7 +769,11 @@ impl<'a> BuiltinTui<'a> {
 
     /// Poll interval for the event loop: shorter while auto-scrolling.
     pub fn poll_ms(&self) -> u64 {
-        if self.mouse.auto_scroll.is_some() { 30 } else { 100 }
+        if self.mouse.auto_scroll.is_some() {
+            30
+        } else {
+            100
+        }
     }
 
     /// The builtin event handling (input line, completion, history, log
@@ -725,21 +811,32 @@ impl<'a> BuiltinTui<'a> {
             confirm_all(input, completion);
         }
         match key.code {
-            KeyCode::PageUp => { state.scroll_up = state.scroll_up.saturating_add(5); }
-            KeyCode::PageDown => { state.scroll_up = state.scroll_up.saturating_sub(5); }
-            KeyCode::Home => { state.scroll_up = u16::MAX; }
-            KeyCode::End => { state.scroll_up = 0; }
+            KeyCode::PageUp => {
+                state.scroll_up = state.scroll_up.saturating_add(5);
+            }
+            KeyCode::PageDown => {
+                state.scroll_up = state.scroll_up.saturating_sub(5);
+            }
+            KeyCode::Home => {
+                state.scroll_up = u16::MAX;
+            }
+            KeyCode::End => {
+                state.scroll_up = 0;
+            }
             KeyCode::Up if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 state.scroll_up = state.scroll_up.saturating_add(1);
             }
             KeyCode::Down if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 state.scroll_up = state.scroll_up.saturating_sub(1);
             }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) && input.value().is_empty() => {
+            KeyCode::Char('d')
+                if key.modifiers.contains(KeyModifiers::CONTROL) && input.value().is_empty() =>
+            {
                 self.exit_requested = true;
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                input.reset(); state.history_idx = None;
+                input.reset();
+                state.history_idx = None;
                 confirm_all(input, completion);
             }
             KeyCode::Esc => {
@@ -754,7 +851,9 @@ impl<'a> BuiltinTui<'a> {
                 confirm_all(input, completion);
                 state.history_idx = None;
                 let trimmed = line.trim();
-                if trimmed.is_empty() { return true; }
+                if trimmed.is_empty() {
+                    return true;
+                }
                 if trimmed == "exit" || trimmed == "quit" {
                     self.exit_requested = true;
                     return true;
@@ -814,7 +913,10 @@ impl<'a> BuiltinTui<'a> {
                         *input = tui_input::Input::new(state.history[new_idx].clone());
                         confirm_all(input, completion);
                     }
-                    _ => { state.history_idx = None; input.reset(); }
+                    _ => {
+                        state.history_idx = None;
+                        input.reset();
+                    }
                 }
             }
             _ => {
@@ -831,13 +933,17 @@ impl<'a> BuiltinTui<'a> {
     /// the viewport edge, extending the selection.
     pub fn on_poll_timeout(&mut self) {
         let Some(ref vp) = self.vp else { return };
-        let Some(scroll_up_dir) = self.mouse.auto_scroll else { return };
+        let Some(scroll_up_dir) = self.mouse.auto_scroll else {
+            return;
+        };
         if !self.mouse.selecting {
             return;
         }
         let state = &mut self.state;
         let mouse = &mut self.mouse;
-        let max_scroll = vp.total_wrapped.saturating_sub(vp.log_inner.height as usize);
+        let max_scroll = vp
+            .total_wrapped
+            .saturating_sub(vp.log_inner.height as usize);
         if scroll_up_dir {
             // Auto-scroll up (towards older content)
             if (state.scroll_up as usize) < max_scroll {
@@ -846,7 +952,14 @@ impl<'a> BuiltinTui<'a> {
             // Extend selection to top of viewport
             let new_start = max_scroll.saturating_sub(state.scroll_up as usize);
             if let Some(anchor) = mouse.anchor {
-                update_selection(state, mouse, anchor, (new_start, 0), &vp.wrapped, &vp.offsets);
+                update_selection(
+                    state,
+                    mouse,
+                    anchor,
+                    (new_start, 0),
+                    &vp.wrapped,
+                    &vp.offsets,
+                );
             }
         } else {
             // Auto-scroll down (towards newer content)
@@ -857,7 +970,14 @@ impl<'a> BuiltinTui<'a> {
             let new_start = max_scroll.saturating_sub(state.scroll_up as usize);
             let bottom_row = new_start + vp.log_inner.height as usize;
             if let Some(anchor) = mouse.anchor {
-                update_selection(state, mouse, anchor, (bottom_row, usize::MAX), &vp.wrapped, &vp.offsets);
+                update_selection(
+                    state,
+                    mouse,
+                    anchor,
+                    (bottom_row, usize::MAX),
+                    &vp.wrapped,
+                    &vp.offsets,
+                );
             }
         }
     }
@@ -883,7 +1003,10 @@ impl<'a> BuiltinTui<'a> {
             .split(area);
 
         let log_area = chunks[0];
-        let log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+        let log_inner = log_area.inner(ratatui::layout::Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
         let log_height = log_inner.height as usize;
         let inner_width = log_inner.width as usize;
 
@@ -917,8 +1040,14 @@ impl<'a> BuiltinTui<'a> {
             "Log".to_string()
         };
 
-        let start = total_rows.saturating_sub(log_height).saturating_sub(self.state.scroll_up as usize);
-        let visible: Vec<String> = if total_rows > 0 { wrapped[start..].to_vec() } else { vec![] };
+        let start = total_rows
+            .saturating_sub(log_height)
+            .saturating_sub(self.state.scroll_up as usize);
+        let visible: Vec<String> = if total_rows > 0 {
+            wrapped[start..].to_vec()
+        } else {
+            vec![]
+        };
 
         self.vp = Some(ViewportCache {
             log_area,
@@ -966,7 +1095,8 @@ impl<'a> BuiltinTui<'a> {
 
         let prompt = "> ";
         let input_area = chunks[1];
-        let (confirmed_part, ghost) = split_confirmed(self.input.value(), self.completion.confirmed);
+        let (confirmed_part, ghost) =
+            split_confirmed(self.input.value(), self.completion.confirmed);
         let input_line = if ghost.is_empty() {
             Line::from(format!("{prompt}{confirmed_part}"))
         } else {
@@ -1017,16 +1147,19 @@ where
             last_blink = Instant::now();
             blink_on = !blink_on;
         }
-        let _frame = terminal.draw(|f| {
-            let mut widgets: Vec<WidgetEntry> = Vec::new();
-            let cursor =
-                builtin.borrow_mut().push_widgets(&mut widgets, f.area(), blink_on);
-            (hooks.on_overlay)(&mut widgets);
-            for entry in &widgets {
-                entry.widget.render_ref(entry.area, f.buffer_mut());
-            }
-            f.set_cursor_position(cursor);
-        }).map_err(|e| e.to_string())?;
+        let _frame = terminal
+            .draw(|f| {
+                let mut widgets: Vec<WidgetEntry> = Vec::new();
+                let cursor = builtin
+                    .borrow_mut()
+                    .push_widgets(&mut widgets, f.area(), blink_on);
+                (hooks.on_overlay)(&mut widgets);
+                for entry in &widgets {
+                    entry.widget.render_ref(entry.area, f.buffer_mut());
+                }
+                f.set_cursor_position(cursor);
+            })
+            .map_err(|e| e.to_string())?;
 
         let poll_ms = builtin.borrow().poll_ms();
 
@@ -1178,7 +1311,9 @@ fn update_selection(
     // of a continuation row.
     let line_len = if cur_row < wrapped.len() {
         wrapped[cur_row].chars().count()
-    } else { 0 };
+    } else {
+        0
+    };
     let cur_col = current.1.min(line_len);
 
     match mouse.click_mode {
@@ -1224,7 +1359,7 @@ pub fn handle_mouse_event(
     mouse: &mut MouseState,
     vp: &ViewportCache,
 ) {
-    use crossterm::event::{KeyModifiers, MouseEventKind, MouseButton};
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
     let inner = vp.log_inner;
     let area = vp.log_area;
@@ -1236,18 +1371,15 @@ pub fn handle_mouse_event(
         && m.row < inner.y + inner.height;
 
     let scrollbar_col = area.x + area.width - 1;
-    let on_scrollbar = m.column == scrollbar_col
-        && m.row > area.y
-        && m.row < area.y + area.height - 1;
+    let on_scrollbar =
+        m.column == scrollbar_col && m.row > area.y && m.row < area.y + area.height - 1;
 
     // Translate screen to content coordinates
     let content_row = |mouse_row: u16| -> usize {
         let vp_row = mouse_row.saturating_sub(inner.y) as usize;
         vp.viewport_start + vp_row
     };
-    let content_col = |mouse_col: u16| -> usize {
-        mouse_col.saturating_sub(inner.x) as usize
-    };
+    let content_col = |mouse_col: u16| -> usize { mouse_col.saturating_sub(inner.x) as usize };
 
     match m.kind {
         MouseEventKind::ScrollUp if in_log || on_scrollbar => {
@@ -1264,9 +1396,8 @@ pub fn handle_mouse_event(
                 let track_h = (area.height.saturating_sub(2)) as usize;
                 let click_y = (m.row - area.y - 1) as usize;
                 let max_scroll = vp.total_wrapped.saturating_sub(inner.height as usize);
-                state.scroll_up = max_scroll.saturating_sub(
-                    click_y * max_scroll / track_h.max(1)
-                ) as u16;
+                state.scroll_up =
+                    max_scroll.saturating_sub(click_y * max_scroll / track_h.max(1)) as u16;
                 return;
             }
 
@@ -1333,7 +1464,9 @@ pub fn handle_mouse_event(
                     state.selection_rect = false;
                     let line_len = if crow < vp.wrapped.len() {
                         vp.wrapped[crow].chars().count()
-                    } else { 0 };
+                    } else {
+                        0
+                    };
                     mouse.anchor = Some((crow, 0));
                     state.selection = Some((crow, 0, crow, line_len));
                 }
@@ -1348,9 +1481,8 @@ pub fn handle_mouse_event(
                     // row on (or above) the top border row.
                     let click_y = m.row.saturating_sub(area.y + 1) as usize;
                     let max_scroll = vp.total_wrapped.saturating_sub(inner.height as usize);
-                    state.scroll_up = max_scroll.saturating_sub(
-                        click_y * max_scroll / track_h.max(1)
-                    ) as u16;
+                    state.scroll_up =
+                        max_scroll.saturating_sub(click_y * max_scroll / track_h.max(1)) as u16;
                 }
                 return;
             }
@@ -1366,10 +1498,19 @@ pub fn handle_mouse_event(
                 if (state.scroll_up as usize) < max_scroll {
                     state.scroll_up += 1;
                 }
-                let new_start = vp.total_wrapped.saturating_sub(inner.height as usize)
+                let new_start = vp
+                    .total_wrapped
+                    .saturating_sub(inner.height as usize)
                     .saturating_sub(state.scroll_up as usize);
                 if let Some(anchor) = mouse.anchor {
-                    update_selection(state, mouse, anchor, (new_start, 0), &vp.wrapped, &vp.offsets);
+                    update_selection(
+                        state,
+                        mouse,
+                        anchor,
+                        (new_start, 0),
+                        &vp.wrapped,
+                        &vp.offsets,
+                    );
                 }
                 mouse.auto_scroll = Some(true);
                 return;
@@ -1378,11 +1519,20 @@ pub fn handle_mouse_event(
                 if state.scroll_up > 0 {
                     state.scroll_up -= 1;
                 }
-                let new_start = vp.total_wrapped.saturating_sub(inner.height as usize)
+                let new_start = vp
+                    .total_wrapped
+                    .saturating_sub(inner.height as usize)
                     .saturating_sub(state.scroll_up as usize);
                 let bottom_row = new_start + inner.height as usize;
                 if let Some(anchor) = mouse.anchor {
-                    update_selection(state, mouse, anchor, (bottom_row, usize::MAX), &vp.wrapped, &vp.offsets);
+                    update_selection(
+                        state,
+                        mouse,
+                        anchor,
+                        (bottom_row, usize::MAX),
+                        &vp.wrapped,
+                        &vp.offsets,
+                    );
                 }
                 mouse.auto_scroll = Some(false);
                 return;
@@ -1410,7 +1560,15 @@ pub fn handle_mouse_event(
 
                 // Copy selection to clipboard
                 if let Some((sr, sc, er, ec)) = state.selection {
-                    let text = extract_selection(&vp.wrapped, &vp.offsets, sr, sc, er, ec, state.selection_rect);
+                    let text = extract_selection(
+                        &vp.wrapped,
+                        &vp.offsets,
+                        sr,
+                        sc,
+                        er,
+                        ec,
+                        state.selection_rect,
+                    );
                     if !text.is_empty() {
                         osc52_copy(&text);
                     }
@@ -1427,8 +1585,18 @@ pub fn handle_mouse_event(
                     update_selection(state, mouse, anchor, (crow, ccol), &vp.wrapped, &vp.offsets);
                     // Copy on extend
                     if let Some((sr, sc, er, ec)) = state.selection {
-                        let text = extract_selection(&vp.wrapped, &vp.offsets, sr, sc, er, ec, state.selection_rect);
-                        if !text.is_empty() { osc52_copy(&text); }
+                        let text = extract_selection(
+                            &vp.wrapped,
+                            &vp.offsets,
+                            sr,
+                            sc,
+                            er,
+                            ec,
+                            state.selection_rect,
+                        );
+                        if !text.is_empty() {
+                            osc52_copy(&text);
+                        }
                     }
                 }
             } else {
@@ -1469,7 +1637,9 @@ struct TuiBufferConsole {
 }
 
 impl TuiBufferConsole {
-    fn new() -> Self { Self { lines: Vec::new() } }
+    fn new() -> Self {
+        Self { lines: Vec::new() }
+    }
 }
 
 impl Console for TuiBufferConsole {
@@ -1508,7 +1678,11 @@ mod tests {
             .client(|_: (), _: &mut dyn crate::Console, _: &mut dyn crate::InputSource| Ok(()))
             .finalize(|| Ok(crate::ShellAction::Continue))
             .complete(move |confirmed: &str| {
-                suggestions.iter().filter(|s| s.starts_with(confirmed)).cloned().collect()
+                suggestions
+                    .iter()
+                    .filter(|s| s.starts_with(confirmed))
+                    .cloned()
+                    .collect()
             })
     }
 
@@ -1518,9 +1692,16 @@ mod tests {
     fn tab_suggests_the_builtin_help_command() {
         let protocols = [completion_protocol("status")];
         let mut input = tui_input::Input::new("he".into());
-        let mut comp = CompletionState { confirmed: 2, ..Default::default() };
+        let mut comp = CompletionState {
+            confirmed: 2,
+            ..Default::default()
+        };
         tab_complete(&mut input, &mut comp, &protocols);
-        assert_eq!(input.value(), "help", "the builtin help command is completable");
+        assert_eq!(
+            input.value(),
+            "help",
+            "the builtin help command is completable"
+        );
     }
 
     /// Plugin suggestions rotate on repeated Tabs and wrap around.
@@ -1531,11 +1712,18 @@ mod tests {
             vec!["grant 5".into(), "grant 51".into()],
         )];
         let mut input = tui_input::Input::new("grant ".into());
-        let mut comp = CompletionState { confirmed: 6, ..Default::default() };
+        let mut comp = CompletionState {
+            confirmed: 6,
+            ..Default::default()
+        };
         tab_complete(&mut input, &mut comp, &protocols);
         assert_eq!(input.value(), "grant 5");
         tab_complete(&mut input, &mut comp, &protocols);
-        assert_eq!(input.value(), "grant 51", "second Tab rotates to the next suggestion");
+        assert_eq!(
+            input.value(),
+            "grant 51",
+            "second Tab rotates to the next suggestion"
+        );
         tab_complete(&mut input, &mut comp, &protocols);
         assert_eq!(input.value(), "grant 5", "wraps around");
     }
@@ -1557,14 +1745,18 @@ mod tests {
             .client(|_: (), _: &mut dyn crate::Console, _: &mut dyn crate::InputSource| Ok(()))
             .finalize(|| Ok(crate::ShellAction::Continue))
             .complete(move |confirmed: &str| {
-                l2.lock().unwrap()
+                l2.lock()
+                    .unwrap()
                     .iter()
                     .filter(|s| s.starts_with(confirmed))
                     .cloned()
                     .collect()
             })];
         let mut input = tui_input::Input::new("grant ".into());
-        let mut comp = CompletionState { confirmed: 6, ..Default::default() };
+        let mut comp = CompletionState {
+            confirmed: 6,
+            ..Default::default()
+        };
         tab_complete(&mut input, &mut comp, &protocols);
         assert_eq!(input.value(), "grant 5");
         // The live list changes underneath: 2 -> 3 suggestions.
@@ -1592,7 +1784,10 @@ mod tests {
             vec!["grant 5".into(), "grant 51".into(), "grant 7".into()],
         )];
         let mut input = tui_input::Input::new("grant ".into());
-        let mut comp = CompletionState { confirmed: 6, ..Default::default() };
+        let mut comp = CompletionState {
+            confirmed: 6,
+            ..Default::default()
+        };
         tab_complete(&mut input, &mut comp, &protocols);
         assert_eq!(input.value(), "grant 5");
         tab_complete(&mut input, &mut comp, &protocols);
@@ -1640,11 +1835,18 @@ mod tests {
     fn tab_completes_command_names_as_ghost() {
         let protocols = [completion_protocol("lorem"), completion_protocol("status")];
         let mut input = tui_input::Input::new("lo".into());
-        let mut comp = CompletionState { confirmed: 2, ..Default::default() };
+        let mut comp = CompletionState {
+            confirmed: 2,
+            ..Default::default()
+        };
         tab_complete(&mut input, &mut comp, &protocols);
         assert_eq!(input.value(), "lorem");
         assert_eq!(comp.confirmed, 2, "a suggestion must NOT be confirmed");
-        assert_eq!(input.cursor(), 5, "cursor moves to the end of the inserted string");
+        assert_eq!(
+            input.cursor(),
+            5,
+            "cursor moves to the end of the inserted string"
+        );
     }
 
     #[test]
@@ -1655,7 +1857,10 @@ mod tests {
             completion_protocol("low"),
         ];
         let mut input = tui_input::Input::new("lo".into());
-        let mut comp = CompletionState { confirmed: 2, ..Default::default() };
+        let mut comp = CompletionState {
+            confirmed: 2,
+            ..Default::default()
+        };
         for expected in ["lorem", "logout", "low", "lorem"] {
             tab_complete(&mut input, &mut comp, &protocols);
             assert_eq!(input.value(), expected);
@@ -1672,7 +1877,10 @@ mod tests {
             vec![format!("{s}alpha"), format!("{s}beta")]
         })];
         let mut input = tui_input::Input::new("lorem a".into());
-        let mut comp = CompletionState { confirmed: 7, ..Default::default() };
+        let mut comp = CompletionState {
+            confirmed: 7,
+            ..Default::default()
+        };
 
         tab_complete(&mut input, &mut comp, &protocols);
         assert_eq!(input.value(), "lorem aalpha", "first suggestion applied");
@@ -1689,7 +1897,10 @@ mod tests {
     fn esc_trims_to_confirmed() {
         let protocols = [completion_protocol("lorem").complete(|s: &str| vec![format!("{s}xyz")])];
         let mut input = tui_input::Input::new("lorem a".into());
-        let mut comp = CompletionState { confirmed: 7, ..Default::default() };
+        let mut comp = CompletionState {
+            confirmed: 7,
+            ..Default::default()
+        };
         tab_complete(&mut input, &mut comp, &protocols);
         assert_eq!(input.value(), "lorem axyz");
 
@@ -1703,7 +1914,10 @@ mod tests {
     fn any_key_confirms_everything() {
         let protocols = [completion_protocol("lorem").complete(|s: &str| vec![format!("{s}xyz")])];
         let mut input = tui_input::Input::new("lorem a".into());
-        let mut comp = CompletionState { confirmed: 7, ..Default::default() };
+        let mut comp = CompletionState {
+            confirmed: 7,
+            ..Default::default()
+        };
         tab_complete(&mut input, &mut comp, &protocols);
         assert!(input.value().len() > comp.confirmed);
 
@@ -1730,7 +1944,10 @@ mod tests {
     fn tab_without_matches_is_noop() {
         let protocols = [completion_protocol("lorem")];
         let mut input = tui_input::Input::new("zz".into());
-        let mut comp = CompletionState { confirmed: 2, ..Default::default() };
+        let mut comp = CompletionState {
+            confirmed: 2,
+            ..Default::default()
+        };
         tab_complete(&mut input, &mut comp, &protocols);
         assert_eq!(input.value(), "zz");
         assert_eq!(comp.index, None);
@@ -1740,7 +1957,10 @@ mod tests {
     fn args_position_without_completer_is_noop() {
         let protocols = [completion_protocol("lorem")];
         let mut input = tui_input::Input::new("lorem x".into());
-        let mut comp = CompletionState { confirmed: 8, ..Default::default() };
+        let mut comp = CompletionState {
+            confirmed: 8,
+            ..Default::default()
+        };
         tab_complete(&mut input, &mut comp, &protocols);
         assert_eq!(input.value(), "lorem x");
         assert_eq!(comp.index, None);
@@ -1781,8 +2001,16 @@ mod tests {
         let (sr, sc, er, ec) = state.selection.unwrap();
         // After ordering: start should be (0, 2), end should be (0, 6)
         // So the selection covers cols 2,3,4,5 — both the anchor (5) and current (2)
-        assert_eq!((sr, sc), (0, 2), "leftward: start should be at current position");
-        assert_eq!((er, ec), (0, 6), "leftward: end should be anchor+1 (inclusive)");
+        assert_eq!(
+            (sr, sc),
+            (0, 2),
+            "leftward: start should be at current position"
+        );
+        assert_eq!(
+            (er, ec),
+            (0, 6),
+            "leftward: end should be anchor+1 (inclusive)"
+        );
     }
 
     #[test]
@@ -1799,7 +2027,11 @@ mod tests {
 
         let (sr, sc, er, ec) = state.selection.unwrap();
         assert_eq!((sr, sc), (0, 2), "rightward: start should be at anchor");
-        assert_eq!((er, ec), (0, 6), "rightward: end should be current+1 (inclusive)");
+        assert_eq!(
+            (er, ec),
+            (0, 6),
+            "rightward: end should be current+1 (inclusive)"
+        );
     }
 
     #[test]
@@ -1829,7 +2061,10 @@ mod tests {
         // Copying the whole line must reinsert the space consumed at the wrap.
         let wrapped = vec!["hello".to_string(), "↪ world".to_string()];
         let end = "↪ world".chars().count(); // display length of the last row
-        assert_eq!(extract_selection(&wrapped, &[0, 6], 0, 0, 1, end, false), "hello world");
+        assert_eq!(
+            extract_selection(&wrapped, &[0, 6], 0, 0, 1, end, false),
+            "hello world"
+        );
     }
 
     #[test]
@@ -1838,7 +2073,10 @@ mod tests {
         let wrapped = vec!["he-llo".to_string(), "↪ world".to_string()];
         let end = "↪ world".chars().count();
         // cols 3..end on row 0, then all of the continuation → "llo world"
-        assert_eq!(extract_selection(&wrapped, &[0, 3], 0, 3, 1, end, false), "llo world");
+        assert_eq!(
+            extract_selection(&wrapped, &[0, 3], 0, 3, 1, end, false),
+            "llo world"
+        );
     }
 
     #[test]
@@ -1855,7 +2093,10 @@ mod tests {
         mouse.anchor = Some((0, 2));
         update_selection(&mut state, &mut mouse, (0, 2), (0, 4), &wrapped, &[0]);
         let (sr, sc, er, ec) = state.selection.unwrap();
-        assert_eq!(extract_selection(&wrapped, &[0], sr, sc, er, ec, false), "def");
+        assert_eq!(
+            extract_selection(&wrapped, &[0], sr, sc, er, ec, false),
+            "def"
+        );
     }
 
     #[test]
@@ -1870,7 +2111,10 @@ mod tests {
         mouse.anchor = Some((0, 0));
         update_selection(&mut state, &mut mouse, (0, 0), (0, 4), &wrapped, &[0]);
         let (sr, sc, er, ec) = state.selection.unwrap();
-        assert_eq!(extract_selection(&wrapped, &[0], sr, sc, er, ec, false), "def");
+        assert_eq!(
+            extract_selection(&wrapped, &[0], sr, sc, er, ec, false),
+            "def"
+        );
     }
 
     fn click_vp() -> ViewportCache {
@@ -1887,7 +2131,7 @@ mod tests {
     #[test]
     fn test_alt_click_starts_rectangular_selection() {
         // Alt+drag = rectangular (column) selection, VS Code-style.
-        use crossterm::event::{MouseButton, KeyModifiers, MouseEvent, MouseEventKind};
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
         let vp = click_vp();
         let mut state = make_state(vec!["hello"]);
         let mut mouse = make_mouse_state();
@@ -1898,14 +2142,17 @@ mod tests {
             modifiers: KeyModifiers::ALT,
         };
         handle_mouse_event(ev, &mut state, &mut mouse, &vp);
-        assert!(state.selection_rect, "Alt+click must start a rectangular selection");
+        assert!(
+            state.selection_rect,
+            "Alt+click must start a rectangular selection"
+        );
     }
 
     #[test]
     fn test_plain_click_is_not_rectangular() {
         // A plain click (no modifiers) must NOT be rectangular — regression
         // guard against the old sticky-Ctrl behavior that flipped rect on.
-        use crossterm::event::{MouseButton, KeyModifiers, MouseEvent, MouseEventKind};
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
         let vp = click_vp();
         let mut state = make_state(vec!["hello"]);
         let mut mouse = make_mouse_state();
@@ -1940,8 +2187,10 @@ mod tests {
                     .into_iter()
                     .map(|c| c.into_owned())
                     .collect();
-                let got: Vec<String> =
-                    wrap_with_offsets(text, width, "↪ ").into_iter().map(|(r, _)| r).collect();
+                let got: Vec<String> = wrap_with_offsets(text, width, "↪ ")
+                    .into_iter()
+                    .map(|(r, _)| r)
+                    .collect();
                 assert_eq!(got, expected, "text={text:?} width={width}");
             }
         }
@@ -1958,11 +2207,14 @@ mod tests {
 
         // Mid-word breaks (break_words) advance by the chunk size.
         let rows = wrap_with_offsets("abcdef", 2, "");
-        assert_eq!(rows, vec![
-            ("ab".to_string(), 0),
-            ("cd".to_string(), 2),
-            ("ef".to_string(), 4),
-        ]);
+        assert_eq!(
+            rows,
+            vec![
+                ("ab".to_string(), 0),
+                ("cd".to_string(), 2),
+                ("ef".to_string(), 4),
+            ]
+        );
     }
 
     /// Three logical lines wrapped at width 8:
@@ -2070,7 +2322,10 @@ mod tests {
         // The LogWidget must be given an area that excludes the top/bottom borders.
         // With Margin { horizontal: 1, vertical: 1 }, a 10-row area gives 8 content rows.
         let area = ratatui::layout::Rect::new(0, 0, 80, 10);
-        let inner = area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+        let inner = area.inner(ratatui::layout::Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
         assert_eq!(inner.y, 1, "inner should start below top border");
         assert_eq!(inner.height, 8, "inner height should exclude both borders");
         assert_eq!(inner.x, 1, "inner should start right of left border");
@@ -2114,9 +2369,13 @@ mod tests {
         assert!(
             state.scroll_up > scroll_before,
             "auto-scroll up: scroll_up should increase (was {}, now {})",
-            scroll_before, state.scroll_up
+            scroll_before,
+            state.scroll_up
         );
-        assert!(state.selection.is_some(), "selection should be extended upward");
+        assert!(
+            state.selection.is_some(),
+            "selection should be extended upward"
+        );
     }
 
     #[test]
@@ -2151,9 +2410,13 @@ mod tests {
         assert!(
             state.scroll_up < scroll_before,
             "auto-scroll down: scroll_up should decrease (was {}, now {})",
-            scroll_before, state.scroll_up
+            scroll_before,
+            state.scroll_up
         );
-        assert!(state.selection.is_some(), "selection should be extended downward");
+        assert!(
+            state.selection.is_some(),
+            "selection should be extended downward"
+        );
     }
 
     // ── Bug: scrollbar drag above track underflows ────────────────
@@ -2186,7 +2449,10 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::NONE,
         };
         handle_mouse_event(press, &mut state, &mut mouse, &vp);
-        assert!(mouse.scrollbar_drag, "press on scrollbar must start a scrollbar drag");
+        assert!(
+            mouse.scrollbar_drag,
+            "press on scrollbar must start a scrollbar drag"
+        );
 
         // Drag along the scrollbar column up to the top border row.
         // Previously panicked: attempt to subtract with overflow.
@@ -2199,7 +2465,9 @@ mod tests {
         handle_mouse_event(drag, &mut state, &mut mouse, &vp);
 
         // Dragging to the very top of the track shows the oldest content.
-        let max_scroll = vp.total_wrapped.saturating_sub(vp.log_inner.height as usize);
+        let max_scroll = vp
+            .total_wrapped
+            .saturating_sub(vp.log_inner.height as usize);
         assert_eq!(
             state.scroll_up as usize, max_scroll,
             "dragging the scrollbar to the top must scroll to the oldest content"
@@ -2268,7 +2536,10 @@ mod tests {
             .split(area);
 
         let log_area = chunks[0];
-        let log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+        let log_inner = log_area.inner(ratatui::layout::Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
 
         assert_eq!(log_area.height, 7, "log area should be height-3");
         assert_eq!(log_area.width, 40, "log area should be full width");
@@ -2288,7 +2559,10 @@ mod tests {
             .split(area);
 
         let log_area = chunks[0];
-        let log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+        let log_inner = log_area.inner(ratatui::layout::Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
 
         assert_eq!(log_area.height, 47, "log area should be height-3");
         assert_eq!(log_area.width, 200, "log area should be full width");
@@ -2307,14 +2581,20 @@ mod tests {
                     ratatui::layout::Constraint::Length(3),
                 ])
                 .split(area);
-            let log_inner = chunks[0].inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+            let log_inner = chunks[0].inner(ratatui::layout::Margin {
+                horizontal: 1,
+                vertical: 1,
+            });
             (log_inner.width, log_inner.height)
         };
 
         let small = compute(40, 10);
         let large = compute(200, 50);
 
-        assert_ne!(small, large, "layout must differ for different terminal sizes");
+        assert_ne!(
+            small, large,
+            "layout must differ for different terminal sizes"
+        );
         assert_eq!(small, (38, 5));
         assert_eq!(large, (198, 45));
     }
@@ -2374,7 +2654,10 @@ mod tests {
         assert_eq!(buf[(10, 0)].symbol(), "\u{2500}");
         assert_eq!(buf[(0, 2)].symbol(), "\u{2502}");
         // … with the title on the top border and content offset inside.
-        assert!(buf[(2, 0)].symbol() == "L", "title must render on the border");
+        assert!(
+            buf[(2, 0)].symbol() == "L",
+            "title must render on the border"
+        );
         assert_eq!(buf[(1, 1)].symbol(), "h");
         assert_eq!(buf[(2, 1)].symbol(), "e");
     }
@@ -2384,7 +2667,9 @@ mod tests {
         use ratatui::widgets::{ScrollbarState, WidgetRef as _};
 
         let widget = ScrollbarWidget {
-            state: ScrollbarState::new(100).position(50).viewport_content_length(10),
+            state: ScrollbarState::new(100)
+                .position(50)
+                .viewport_content_length(10),
         };
         let area = ratatui::layout::Rect::new(0, 0, 1, 10);
         let mut buf = ratatui::buffer::Buffer::empty(area);
@@ -2393,7 +2678,9 @@ mod tests {
         assert!(
             (0..area.height).all(|y| buf[(0, y)].symbol() != " "),
             "scrollbar must paint its whole column, got {:?}",
-            (0..area.height).map(|y| buf[(0, y)].symbol()).collect::<Vec<_>>()
+            (0..area.height)
+                .map(|y| buf[(0, y)].symbol())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2404,10 +2691,14 @@ mod tests {
         // ordinary text, never as broken control glyphs.
         let mut builtin = BuiltinTui::new(std::path::Path::new("/nonexistent"), &[]);
         builtin.state.log_lines.push("good line".into());
-        builtin.state.log_lines.push("bad\nline\u{7}\u{1b}[0m".into());
+        builtin
+            .state
+            .log_lines
+            .push("bad\nline\u{7}\u{1b}[0m".into());
 
         let mut widgets = Vec::new();
-        let _extent = builtin.push_widgets(&mut widgets, ratatui::layout::Rect::new(0, 0, 40, 10), true);
+        let _extent =
+            builtin.push_widgets(&mut widgets, ratatui::layout::Rect::new(0, 0, 40, 10), true);
         let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 10));
         for w in &widgets {
             w.widget.render_ref(w.area, &mut buf);
@@ -2418,5 +2709,4 @@ mod tests {
             .count();
         assert_eq!(bad, 0, "control characters must never reach the buffer");
     }
-
 }

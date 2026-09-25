@@ -2,21 +2,27 @@
 //!
 //! Run as server: `cargo run --example echo -- serve /tmp/echo.sock`
 //! Run as client: `cargo run --example echo -- /tmp/echo.sock`
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use serde::{Deserialize, Serialize};
 use servyi_servatui::*;
 use std::env;
 
 #[derive(Serialize, Deserialize)]
-struct EchoArgs { text: String }
+struct EchoArgs {
+    text: String,
+}
 
 #[derive(Serialize, Deserialize)]
-struct GreetResult { message: String }
+struct GreetResult {
+    message: String,
+}
 
 fn echo_protocol() -> Protocol {
     Plugin::new("echo", "Echo text back")
-        .parse(|args: &str| Ok(EchoArgs { text: args.to_string() }))
+        .parse(|args: &str| {
+            Ok(EchoArgs {
+                text: args.to_string(),
+            })
+        })
         .client(|args: EchoArgs, _out, _input| Ok(args))
         .server(|args: EchoArgs| Ok(EchoArgs { text: args.text }))
         .client(|result: EchoArgs, out, _input| {
@@ -30,7 +36,11 @@ fn greet_protocol() -> Protocol {
     Plugin::new("greet", "Get a greeting")
         .parse(|_: &str| Ok(()))
         .client(|_: (), _out, _input| Ok(()))
-        .server(|_: ()| Ok(GreetResult { message: "Hello from servatui!".into() }))
+        .server(|_: ()| {
+            Ok(GreetResult {
+                message: "Hello from servatui!".into(),
+            })
+        })
         .client(|result: GreetResult, out, _input| {
             out.print_line(&result.message);
             Ok(())

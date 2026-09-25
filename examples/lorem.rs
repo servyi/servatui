@@ -3,8 +3,6 @@
 //!
 //! Run as server: `cargo run --example lorem -- serve /tmp/lorem.sock`
 //! Run as client: `cargo run --example lorem -- /tmp/lorem.sock`
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use serde::{Deserialize, Serialize};
 use servyi_servatui::*;
 use std::env;
@@ -13,13 +11,19 @@ const LOREM: &str = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, \
 sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.";
 
 #[derive(Serialize, Deserialize)]
-struct LoremResult { text: String }
+struct LoremResult {
+    text: String,
+}
 
 fn lorem_protocol() -> Protocol {
     Plugin::new("lorem", "Fill one line with lorem ipsum")
         .parse(|_: &str| Ok(()))
         .client(|_: (), _out, _input| Ok(()))
-        .server(|_: ()| Ok(LoremResult { text: LOREM.to_string() }))
+        .server(|_: ()| {
+            Ok(LoremResult {
+                text: LOREM.to_string(),
+            })
+        })
         .client(|result: LoremResult, out, _input| {
             out.print_line(&result.text);
             Ok(())

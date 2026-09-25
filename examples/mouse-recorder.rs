@@ -4,13 +4,15 @@
 //!
 //! Follow on-screen instructions. The mouse position is highlighted in real-time.
 //! Button states shown in footer. Press 'q' to quit and dump events.
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyEventKind, MouseEvent, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -41,8 +43,18 @@ impl RecordedEvent {
             MouseEventKind::ScrollRight => "ScrollRight".into(),
             MouseEventKind::Moved => "Moved".into(),
         };
-        let modifiers = if m.modifiers.is_empty() { "none".into() } else { format!("{:?}", m.modifiers) };
-        Self { elapsed_ms: start.elapsed().as_millis(), kind, column: m.column, row: m.row, modifiers }
+        let modifiers = if m.modifiers.is_empty() {
+            "none".into()
+        } else {
+            format!("{:?}", m.modifiers)
+        };
+        Self {
+            elapsed_ms: start.elapsed().as_millis(),
+            kind,
+            column: m.column,
+            row: m.row,
+            modifiers,
+        }
     }
 }
 
@@ -81,13 +93,19 @@ fn main() -> std::io::Result<()> {
                 .split(f.area());
 
             log_area = chunks[0];
-            log_inner = log_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 0 });
+            log_inner = log_area.inner(ratatui::layout::Margin {
+                horizontal: 1,
+                vertical: 0,
+            });
 
             f.render_widget(Clear, log_area);
             f.render_widget(
                 Block::default().borders(Borders::ALL).title(format!(
                     "Log (inner: x={},y={},w={},h={} | scrollbar: col={})",
-                    log_inner.x, log_inner.y, log_inner.width, log_inner.height,
+                    log_inner.x,
+                    log_inner.y,
+                    log_inner.width,
+                    log_inner.height,
                     log_area.x + log_area.width - 1,
                 )),
                 log_area,
@@ -97,12 +115,13 @@ fn main() -> std::io::Result<()> {
             let buf = f.buffer_mut();
             let mut row = log_inner.y;
 
-            let mut line_at = |buf: &mut ratatui::buffer::Buffer, text: &str, style: Style| -> u16 {
-                let y = row;
-                buf.set_string(x, y, text, style);
-                row += 1;
-                y
-            };
+            let mut line_at =
+                |buf: &mut ratatui::buffer::Buffer, text: &str, style: Style| -> u16 {
+                    let y = row;
+                    buf.set_string(x, y, text, style);
+                    row += 1;
+                    y
+                };
 
             // Instruction
             if step < instructions.len() {
@@ -113,32 +132,78 @@ fn main() -> std::io::Result<()> {
 
             // Row 2: click X
             let y = line_at(buf, "  X click here", Style::default());
-            let _cell = buf.cell_mut((x + 2, y)).map(|c| c.set_char('X').set_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+            let _cell = buf.cell_mut((x + 2, y)).map(|c| {
+                c.set_char('X')
+                    .set_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+            });
 
             // Row 3: drag A→B
-            let y = line_at(buf, "  A........................................B", Style::default());
-            let _cell = buf.cell_mut((x + 2, y)).map(|c| c.set_char('A').set_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
-            let _cell = buf.cell_mut((x + 44, y)).map(|c| c.set_char('B').set_style(Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)));
+            let y = line_at(
+                buf,
+                "  A........................................B",
+                Style::default(),
+            );
+            let _cell = buf.cell_mut((x + 2, y)).map(|c| {
+                c.set_char('A').set_style(
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
+            });
+            let _cell = buf.cell_mut((x + 44, y)).map(|c| {
+                c.set_char('B').set_style(
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                )
+            });
 
             // Row 4: double-click HELLO
             let y = line_at(buf, "  The word HELLO is here", Style::default());
             for (i, _) in "HELLO".chars().enumerate() {
-                let _cell = buf.cell_mut((x + 11 + i as u16, y)).map(|c| c.set_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+                let _cell = buf.cell_mut((x + 11 + i as u16, y)).map(|c| {
+                    c.set_style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                });
             }
 
             // Row 5: scroll
             let _width = line_at(buf, "  scroll wheel here", Style::default());
 
             // Row 6: ctrl+drag C→D
-            let y = line_at(buf, "  C........................................D", Style::default());
-            let _cell = buf.cell_mut((x + 2, y)).map(|c| c.set_char('C').set_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
-            let _cell = buf.cell_mut((x + 44, y)).map(|c| c.set_char('D').set_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+            let y = line_at(
+                buf,
+                "  C........................................D",
+                Style::default(),
+            );
+            let _cell = buf.cell_mut((x + 2, y)).map(|c| {
+                c.set_char('C').set_style(
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                )
+            });
+            let _cell = buf.cell_mut((x + 44, y)).map(|c| {
+                c.set_char('D').set_style(
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                )
+            });
 
             let _width = line_at(buf, "", Style::default());
 
             // Footer: tracker status + event count
-            let status = format!("{}  |  Events: {}  |  Step: {}/{}",
-                tracker.status_string(), events.len(), step + 1, instructions.len());
+            let status = format!(
+                "{}  |  Events: {}  |  Step: {}/{}",
+                tracker.status_string(),
+                events.len(),
+                step + 1,
+                instructions.len()
+            );
             let _width = line_at(buf, &status, Style::default().fg(Color::DarkGray));
 
             // Highlight current mouse position (overlays everything)
@@ -148,20 +213,28 @@ fn main() -> std::io::Result<()> {
 
         if event::poll(Duration::from_millis(16))? {
             match event::read()? {
-                Event::Key(k) if k.kind == KeyEventKind::Press => {
-                    match k.code {
-                        crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Char('Q') => break,
-                        crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Enter
-                            if step < instructions.len() - 1 => { step += 1; }
-                        _ => {}
+                Event::Key(k) if k.kind == KeyEventKind::Press => match k.code {
+                    crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Char('Q') => {
+                        break
                     }
-                }
+                    crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Enter
+                        if step < instructions.len() - 1 =>
+                    {
+                        step += 1;
+                    }
+                    _ => {}
+                },
                 Event::Mouse(m) => {
                     tracker.process(&m);
                     events.push(RecordedEvent::from_mouse(&m, start));
                     match m.kind {
-                        MouseEventKind::Up(_) | MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-                            if step < instructions.len() - 1 => { step += 1; }
+                        MouseEventKind::Up(_)
+                        | MouseEventKind::ScrollDown
+                        | MouseEventKind::ScrollUp
+                            if step < instructions.len() - 1 =>
+                        {
+                            step += 1;
+                        }
                         _ => {}
                     }
                 }
@@ -178,11 +251,16 @@ fn main() -> std::io::Result<()> {
 
     // Dump
     println!("=== {} mouse events recorded ===\n", events.len());
-    println!("{:>6}  {:<22}  {:>4}  {:>4}  {:>10}", "ms", "kind", "col", "row", "modifiers");
+    println!(
+        "{:>6}  {:<22}  {:>4}  {:>4}  {:>10}",
+        "ms", "kind", "col", "row", "modifiers"
+    );
     println!("{}", "-".repeat(60));
     for e in &events {
-        println!("{:>6}  {:<22}  {:>4}  {:>4}  {:>10}",
-            e.elapsed_ms, e.kind, e.column, e.row, e.modifiers);
+        println!(
+            "{:>6}  {:<22}  {:>4}  {:>4}  {:>10}",
+            e.elapsed_ms, e.kind, e.column, e.row, e.modifiers
+        );
     }
 
     println!("\n=== Rust test replay data ===\n");
@@ -201,7 +279,10 @@ fn main() -> std::io::Result<()> {
             "ScrollDown" => "MouseEventKind::ScrollDown",
             _ => "MouseEventKind::Moved",
         };
-        println!("    ({}, {}, {}), // +{}ms", kind_code, e.column, e.row, e.elapsed_ms);
+        println!(
+            "    ({}, {}, {}), // +{}ms",
+            kind_code, e.column, e.row, e.elapsed_ms
+        );
     }
     println!("];");
 

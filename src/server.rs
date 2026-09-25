@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::path::{Path, PathBuf};
 
-use crate::connection::{SocketConnection, TypedConnection, RawConnection};
+use crate::connection::{RawConnection, SocketConnection, TypedConnection};
 use crate::console::{BufferConsole, NoInput};
 use crate::protocol::Protocol;
 
@@ -23,12 +23,13 @@ impl ServerHandle {
     {
         use std::sync::Arc;
         let _ = std::fs::remove_file(&self.socket);
-        let listener = std::os::unix::net::UnixListener::bind(&self.socket)
-            .map_err(|e| e.to_string())?;
+        let listener =
+            std::os::unix::net::UnixListener::bind(&self.socket).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _prev = std::fs::set_permissions(&self.socket, std::fs::Permissions::from_mode(0o666)).ok();
+            let _prev =
+                std::fs::set_permissions(&self.socket, std::fs::Permissions::from_mode(0o666)).ok();
         }
 
         let protocols = Arc::new(self.protocols);
@@ -41,7 +42,10 @@ impl ServerHandle {
                     let _worker = std::thread::spawn(move || {
                         let reader = match stream.try_clone() {
                             Ok(r) => r,
-                            Err(e) => { eprintln!("Clone error: {e}"); return; }
+                            Err(e) => {
+                                eprintln!("Clone error: {e}");
+                                return;
+                            }
                         };
                         let mut conn = SocketConnection {
                             stream,
@@ -97,9 +101,9 @@ pub fn dispatch_protocol(
     conn: &mut dyn RawConnection,
     ctx: &dyn Any,
 ) -> Result<(), String> {
-    let cmd_name: String = serde_json::from_str(cmd_str)
-        .map_err(|e| e.to_string())?;
-    let proto = protocols.iter()
+    let cmd_name: String = serde_json::from_str(cmd_str).map_err(|e| e.to_string())?;
+    let proto = protocols
+        .iter()
         .find(|p| p.name == cmd_name)
         .ok_or_else(|| format!("Unknown command: {cmd_name}"))?;
     proto.run_server(conn, ctx)
@@ -123,9 +127,18 @@ impl AppBuilder {
         }
     }
 
-    pub fn version(mut self, v: impl Into<String>) -> Self { self.version = v.into(); self }
-    pub fn log_path(mut self, p: impl Into<String>) -> Self { self.log_path = p.into(); self }
-    pub fn protocol(mut self, p: Protocol) -> Self { self.protocols.push(p); self }
+    pub fn version(mut self, v: impl Into<String>) -> Self {
+        self.version = v.into();
+        self
+    }
+    pub fn log_path(mut self, p: impl Into<String>) -> Self {
+        self.log_path = p.into();
+        self
+    }
+    pub fn protocol(mut self, p: Protocol) -> Self {
+        self.protocols.push(p);
+        self
+    }
     pub fn protocol_all(mut self, protocols: impl IntoIterator<Item = Protocol>) -> Self {
         self.protocols.extend(protocols);
         self
@@ -150,12 +163,21 @@ pub struct App {
 }
 
 impl App {
-    pub fn builder(socket: impl AsRef<Path>) -> AppBuilder { AppBuilder::new(socket) }
+    pub fn builder(socket: impl AsRef<Path>) -> AppBuilder {
+        AppBuilder::new(socket)
+    }
 
     /// Run as a server. Blocks.
     /// `ctx` is shared state passed to all `.server_ctx()` steps.
-    pub fn run_server<Ctx: 'static + Send + Sync>(self, ctx: std::sync::Arc<Ctx>) -> Result<(), String> {
-        ServerHandle { socket: self.socket, protocols: self.protocols }.run(ctx)
+    pub fn run_server<Ctx: 'static + Send + Sync>(
+        self,
+        ctx: std::sync::Arc<Ctx>,
+    ) -> Result<(), String> {
+        ServerHandle {
+            socket: self.socket,
+            protocols: self.protocols,
+        }
+        .run(ctx)
     }
 
     /// Run a single command as a CLI client.
@@ -166,8 +188,14 @@ impl App {
 
     /// Run a single command as a CLI client.
     /// Returns (rendered lines, raw server response bytes).
-    pub fn run_cli_command_raw(&self, command: &str, args: &str) -> Result<(Vec<String>, Vec<u8>), String> {
-        let proto = self.protocols.iter()
+    pub fn run_cli_command_raw(
+        &self,
+        command: &str,
+        args: &str,
+    ) -> Result<(Vec<String>, Vec<u8>), String> {
+        let proto = self
+            .protocols
+            .iter()
             .find(|p| p.name == command)
             .ok_or_else(|| format!("Unknown command: {command}"))?;
         let mut console = BufferConsole::new();
