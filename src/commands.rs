@@ -1,19 +1,24 @@
-//! Declarative command metadata: the single source of truth from
-//! which the protocol registration and the CLI argument trees derive
-//! (issue #5).
+//! Argument-shape vocabulary for deriving surfaces from one command
+//! table (issue #5).
 //!
-//! The framework stays generic: [`ArgSpec`] describes argument shape.
-//! Completion is deliberately NOT described here — the completer
-//! closure registered on the protocol IS the completion surface, and
-//! every consumer reads it directly: the TUI tab-completes with it,
-//! `--complete` queries it, and the `servatui-grammar` walker walks
-//! it verbatim. A typed description of a closure between the two
-//! would solve no problem (see the PR #6/#7 discussions).
+//! The ONE table is the consumer's command spec (name, help, parse,
+//! completer, offline) — servatui's [`crate::protocol`] builders
+//! consume it directly. What that table cannot express, and what
+//! derived surfaces (CLI argument trees, validation) need, is the
+//! SHAPE of each command's positional arguments: this vocabulary.
+//!
+//! A consumer's spec gains `args: &[ArgSpec]` and every surface reads
+//! the same row: the wire args-string parser documents/validates
+//! against it, the CLI tree derives from it. Completion is not
+//! described here — the completer closure registered on the protocol
+//! IS the completion surface (TUI tab-complete, `--complete` queries,
+//! and the `servatui-grammar` walker all consume that closure
+//! verbatim).
 
 /// The shape of one positional argument of a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgKind {
-    /// A free-form string (a name, a hash, a path).
+    /// A free-form string (a name, a hash).
     Str,
     /// A decimal number (ids).
     U64,
@@ -21,14 +26,14 @@ pub enum ArgKind {
     Path,
 }
 
-/// One positional argument.
+/// One positional argument of a command's args-string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArgSpec {
     pub name: &'static str,
     pub kind: ArgKind,
-    /// Arguments after the first optional one must themselves be
-    /// optional; `Option<Option<T>>` shapes are expressed by arity,
-    /// not nesting.
+    /// Optional arguments may be omitted from the args-string;
+    /// arguments after the first optional one must themselves be
+    /// optional.
     pub optional: bool,
 }
 
@@ -41,51 +46,22 @@ impl ArgSpec {
     }
 }
 
-/// The full declarative description of one command — the single
-/// source of truth for its NAME, HELP, and argument shape. A
-/// downstream crate declares a table of these and derives: the
-/// `Protocol` (parse + steps stay hand-written where they carry
-/// logic) and the CLI argument tree. Completion is registered as a
-/// closure on the protocol, not described here.
-#[derive(Debug, Clone, Copy)]
-pub struct CommandDef {
-    pub name: &'static str,
-    pub help: &'static str,
-    /// Positional arguments in order.
-    pub args: &'static [ArgSpec],
-}
-
-impl CommandDef {
-    pub const fn new(name: &'static str, help: &'static str) -> Self {
-        Self { name, help, args: &[] }
-    }
-
-    pub const fn args(mut self, args: &'static [ArgSpec]) -> Self {
-        self.args = args;
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn command_defs_are_const_constructible() {
-        const DEFS: &[CommandDef] = &[
-            CommandDef::new("status", "show everything"),
-            CommandDef::new("grant", "grant one")
-                .args(&[ArgSpec::required("id", ArgKind::U64)]),
-            CommandDef::new("mode", "set mode").args(&[
-                ArgSpec::required("mode", ArgKind::Str),
-                ArgSpec::optional("file", ArgKind::Path),
-            ]),
+    fn arg_specs_are_const_constructible() {
+        const ARGS: &[ArgSpec] = &[
+            ArgSpec::required("id", ArgKind::U64),
+            ArgSpec::optional("reason", ArgKind::Str),
+            ArgSpec::required("file", ArgKind::Path),
         ];
-        assert_eq!(DEFS[0].name, "status");
-        assert!(DEFS[0].args.is_empty());
-        assert_eq!(DEFS[1].args[0].name, "id");
-        assert!(!DEFS[1].args[0].optional);
-        assert_eq!(DEFS[2].args.len(), 2);
-        assert!(DEFS[2].args[1].optional);
+        assert_eq!(ARGS[0].name, "id");
+        assert!(!ARGS[0].optional);
+        assert_eq!(ARGS[0].kind, ArgKind::U64);
+        assert!(ARGS[1].optional);
+        assert_eq!(ARGS[2].kind, ArgKind::Path);
+        assert_eq!(ARGS.len(), 3);
     }
 }
