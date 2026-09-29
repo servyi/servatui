@@ -6,7 +6,7 @@ license = "MIT"
 description = "Generic server-client framework with TUI/CLI frontends. Define protocols with type-safe builder chains."
 
 [workspace]
-members = ["display"]
+members = ["display", "grammar"]
 
 [features]
 default = ["tui"]
