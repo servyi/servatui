@@ -19,7 +19,7 @@
 pub const TERMINAL_RESTORE_BYTES: &[u8] =
     b"\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?25h";
 
-pub mod commands;
+pub mod args;
 pub mod connection;
 pub mod console;
 #[cfg(feature = "tui")]
@@ -35,7 +35,7 @@ pub use connection::{RawConnection, SocketConnection, TypedConnection};
 pub use console::{BufferConsole, Console, InputSource, NoInput, StdinInput, StdoutConsole};
 #[cfg(feature = "tui")]
 pub use mouse::MouseTracker;
-pub use commands::{ArgKind, ArgSpec};
+pub use args::{ArgKind, ArgSpec};
 pub use protocol::{
     Client, ClientBuilder, ClientHead, Plugin, Protocol, Server, ServerBuilder, ShellAction,
 };
