@@ -6,3 +6,7 @@ license = "MIT"
 description = "The autocomplete algorithm as a grammar walker: suggestions for the string so far, drawn with nonzero probability, stopping always possible. Infinite grammars by construction."
 
 [dependencies]
+rand_core = "0.9"
+
+[dev-dependencies]
+rand = "0.9"

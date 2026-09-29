@@ -17,35 +17,15 @@
 //! is materialized, the edges of each iteration are computed by the
 //! suggestion function at iteration time, and the walk's state is
 //! exactly the string so far. Determinism contract: a draw is a pure
-//! function of the suggestion function's behavior and the [`Rng`]
-//! value sequence.
+//! function of the suggestion function's behavior and the
+//! `rand_core::RngCore` value sequence.
 //!
 //! The crate has no dependencies and knows nothing of servatui's
 //! types; any project whose surface can answer "what may the line
 //! become next" can be walked (fuzzed, differentially tested).
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 
-/// The randomness a walk consumes. Implement over any RNG (splitmix64,
-/// pcg, ...); determinism of a draw follows from determinism of the
-/// value sequence.
-pub trait Rng {
-    fn next_u64(&mut self) -> u64;
-}
-
-/// Splitmix64 — the default RNG for tests and for callers that just
-/// want seeded determinism.
-#[derive(Clone)]
-pub struct SplitMix64(pub u64);
-
-impl Rng for SplitMix64 {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-}
+use rand_core::RngCore;
 
 /// Simulate the autocomplete typist over a suggestion function.
 ///
@@ -53,6 +33,9 @@ impl Rng for SplitMix64 {
 ///   become (servatui completer shape: full lines, prefix included;
 ///   called once per iteration, so its answers may change between
 ///   iterations — live state).
+/// * `rng` — any `rand_core::RngCore` implementor (`SmallRng`,
+///   `StdRng`, a consumer's hand-rolled splitmix64, ...); the only
+///   randomness the walk consumes is `next_u64`.
 /// * `p_continue_num/den` — the chance of ONE MORE step whenever
 ///   suggestions exist; strictly between 0 and `den` (`den > 1`), so
 ///   stopping and continuing are both always possible.
@@ -71,7 +54,7 @@ impl Rng for SplitMix64 {
 pub fn type_out(
     start: &str,
     suggest: &dyn Fn(&str) -> Vec<String>,
-    rng: &mut dyn Rng,
+    rng: &mut dyn RngCore,
     p_continue_num: u64,
     p_continue_den: u64,
     max_iterations: usize,
@@ -98,6 +81,12 @@ pub fn type_out(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::rngs::SmallRng;
+    use rand_core::SeedableRng;
+
+    fn seeded(seed: u64) -> SmallRng {
+        SmallRng::seed_from_u64(seed)
+    }
 
     /// The verified real-world shape: full-line suggestions, prefix
     /// included (mirrors fuse-protocol's complete_first_secret —
@@ -112,7 +101,7 @@ mod tests {
             }
         };
         // two steps: "reset exi" -> adopt -> no further suggestions
-        let out = type_out("reset exi", &suggest, &mut SplitMix64(0), 9, 10, 10);
+        let out = type_out("reset exi", &suggest, &mut seeded(0), 9, 10, 10);
         assert_eq!(out, "reset existing.yaml");
     }
 
@@ -135,8 +124,8 @@ mod tests {
             }
         };
         for seed in 0..100u64 {
-            let a = type_out("", &suggest, &mut SplitMix64(seed), 8, 10, 1000);
-            let b = type_out("", &suggest, &mut SplitMix64(seed), 8, 10, 1000);
+            let a = type_out("", &suggest, &mut seeded(seed), 8, 10, 1000);
+            let b = type_out("", &suggest, &mut seeded(seed), 8, 10, 1000);
             assert_eq!(a, b, "seed {seed} must reproduce");
         }
     }
@@ -157,7 +146,7 @@ mod tests {
         let mut saw_two = false;
         let mut saw_stop = false;
         for seed in 0..200u64 {
-            match type_out("", &suggest, &mut SplitMix64(seed), 7, 10, 10).as_str() {
+            match type_out("", &suggest, &mut seeded(seed), 7, 10, 10).as_str() {
                 "one" => saw_one = true,
                 "two" => saw_two = true,
                 "" => saw_stop = true,
@@ -189,7 +178,7 @@ mod tests {
                     Vec::new()
                 }
             };
-            let out = type_out("", &suggest, &mut SplitMix64(seed), 9, 10, 10);
+            let out = type_out("", &suggest, &mut seeded(seed), 9, 10, 10);
             // call order is observable: w0 adopted, then w1, then w2
             if out == "w2" && calls.load(std::sync::atomic::Ordering::SeqCst) >= 3 {
                 three_live_rounds = true;
@@ -215,7 +204,7 @@ mod tests {
         let suggest = |line: &str| vec![format!("{line} x")];
         let mut hit_bound = 0;
         for seed in 0..200u64 {
-            let out = type_out("", &suggest, &mut SplitMix64(seed), 1, 2, 1000);
+            let out = type_out("", &suggest, &mut seeded(seed), 1, 2, 1000);
             if out.matches(" x").count() >= 1000 {
                 hit_bound += 1;
             }
@@ -228,8 +217,15 @@ mod tests {
     #[test]
     fn no_suggestions_returns_start() {
         let suggest = |_line: &str| Vec::new();
-        let mut rng = SplitMix64(42);
+        let mut rng = seeded(42);
         assert_eq!(type_out("already done", &suggest, &mut rng, 1, 2, 10), "already done");
-        assert_eq!(rng.0, SplitMix64(42).0, "no randomness consumed");
+        // The walk consumed NO randomness: replaying the same seed
+        // draws the identical first values the untouched rng holds.
+        let mut probe = [0u8; 8];
+        rng.fill_bytes(&mut probe);
+        let mut fresh = [0u8; 8];
+        let mut rng2 = seeded(42);
+        rng2.fill_bytes(&mut fresh);
+        assert_eq!(probe, fresh, "no randomness consumed by the walk");
     }
 }
