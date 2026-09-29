@@ -1,30 +1,27 @@
-//! A lazy grammar walker.
+//! A grammar walker that IS the autocomplete algorithm.
 //!
-//! A grammar is a tree built by composition ([`Lit`], [`Seq`], [`Alt`],
-//! [`Opt`], [`Rep`], [`Dyn`]) and is **never materialized**: a draw is
-//! a random [`Node::walk`] from the root that appends to the output
-//! string as it goes. Because the tree exists only as the path being
-//! walked, grammars may be **infinite** — in depth, and in edge set:
-//! [`Dyn`] computes its value at walk time, so its edges can come
-//! from live external state (e.g. what a server currently reports)
-//! that did not exist before the walk and changes between walks.
+//! One abstraction — a *suggestion function* `prefix → what may come
+//! next` (in servatui this is the protocol completer; in a fuzzer it
+//! is fed by live server state) — and one loop:
 //!
-//! The walk contract (also the differential-testing contract, e.g.
-//! for refactor checking): a draw is a pure function of the tree and
-//! the sequence of [`Rng::next_u64`] values; and **every edge out of
-//! a node has nonzero probability** — an [`Alt`] draws uniformly, an
-//! [`Opt`] takes both branches with nonzero chance, a [`Rep`] may
-//! always stop or continue. Terminating walks are guaranteed by the
-//! budget: every append consumes budget, so no walk can loop forever.
+//! 1. ask for suggestions given the string constructed so far;
+//! 2. if there are none, stop;
+//! 3. otherwise either stop (nonzero chance, whenever suggestions
+//!    exist) or apply one suggestion as the next component of the
+//!    string (uniform draw — every suggestion has nonzero
+//!    probability);
+//! 4. repeat.
+//!
+//! That is a user typing with Tab-completion, and it is a random walk
+//! through a potentially infinite grammar: nothing is materialized,
+//! the edges of each iteration are computed by the suggestion
+//! function at iteration time, and the walk's state is exactly the
+//! string so far. Determinism contract: a draw is a pure function of
+//! the suggestion function's behavior and the [`Rng`] value sequence.
 //!
 //! The crate has no dependencies and knows nothing of servatui's
-//! protocol types; any project can define its grammar over its own
-//! vocabulary.
-
-use std::fmt;
-
-/// The closure [`Dyn`] computes its walk-time value with.
-pub type DynFn = Box<dyn Fn(&mut dyn Rng) -> String>;
+//! types; any project whose surface can answer "what may come next
+//! given this prefix" can be walked (fuzzed, differentially tested).
 
 /// The randomness a walk consumes. Implement over any RNG (splitmix64,
 /// pcg, ...); determinism of a draw follows from determinism of the
@@ -34,8 +31,7 @@ pub trait Rng {
 }
 
 /// Splitmix64 — the default RNG for tests and for callers that just
-/// want seeded determinism (`Seedable` below is intentionally absent:
-/// callers often carry their own).
+/// want seeded determinism.
 #[derive(Clone)]
 pub struct SplitMix64(pub u64);
 
@@ -49,157 +45,65 @@ impl Rng for SplitMix64 {
     }
 }
 
-/// Everything a node may consume or produce during one walk: the rng,
-/// the output string, and the remaining budget.
+/// Simulate the autocomplete typist over a suggestion function.
 ///
-/// The budget counts **append calls** (not bytes): any repetition that
-/// appends must eventually exhaust it, which is what makes infinite
-/// grammars safe to walk. Construct via [`Walk::new`].
-pub struct Walk<'a> {
-    rng: &'a mut dyn Rng,
-    out: String,
-    budget: usize,
-}
-
-impl<'a> Walk<'a> {
-    /// A walk producing at most `budget` appends.
-    pub fn new(rng: &'a mut dyn Rng, budget: usize) -> Self {
-        Self { rng, out: String::new(), budget }
-    }
-
-    /// Append `s` if budget remains; `false` means the walk is full
-    /// and the caller should wind down (repetition nodes stop).
-    pub fn append(&mut self, s: &str) -> bool {
-        if self.budget == 0 {
-            return false;
+/// * `suggest` — given the string so far, the candidates for the next
+///   component (they may contain leading separators; they are opaque
+///   to the walker). Called once per iteration, so its answers may
+///   change between iterations (live state).
+/// * `p_continue_num/den` — the chance of ONE MORE component whenever
+///   suggestions exist; strictly between 0 and `den` (`den > 1`), so
+///   stopping and continuing are both always possible.
+/// * `max_iterations` — safety bound only; a walk of a suggester that
+///   always answers would still stop by the roll alone (almost
+///   surely). Choose it generously.
+///
+/// Returns the string constructed when the typist stopped: no
+/// suggestions, chose to stop, or (degenerate) the bound.
+pub fn type_out(
+    start: &str,
+    suggest: &dyn Fn(&str) -> Vec<String>,
+    rng: &mut dyn Rng,
+    p_continue_num: u64,
+    p_continue_den: u64,
+    max_iterations: usize,
+) -> String {
+    assert!(
+        p_continue_den > 1 && p_continue_num > 0 && p_continue_num < p_continue_den,
+        "continue probability must keep both edges nonzero"
+    );
+    let mut line = start.to_string();
+    for _ in 0..max_iterations {
+        let suggestions = suggest(&line);
+        if suggestions.is_empty() {
+            return line;
         }
-        self.budget -= 1;
-        self.out.push_str(s);
-        true
-    }
-
-    /// Whether any budget remains.
-    pub fn has_budget(&self) -> bool {
-        self.budget > 0
-    }
-
-    /// Finish the walk, yielding the generated string.
-    pub fn finish(self) -> String {
-        self.out
-    }
-}
-
-/// One node of a lazily-defined grammar tree.
-pub trait Node {
-    /// Consume randomness and append output; every edge out of this
-    /// node must have nonzero probability.
-    fn walk(&self, w: &mut Walk);
-}
-
-/// A literal string.
-pub struct Lit(pub &'static str);
-
-impl Node for Lit {
-    fn walk(&self, w: &mut Walk) {
-        let _ = w.append(self.0);
-    }
-}
-
-/// A sequence: children in order.
-pub struct Seq<'a>(pub &'a [&'a dyn Node]);
-
-impl Node for Seq<'_> {
-    fn walk(&self, w: &mut Walk) {
-        for child in self.0 {
-            child.walk(w);
+        if rng.next_u64() % p_continue_den >= p_continue_num {
+            return line;
         }
+        let pick = (rng.next_u64() % suggestions.len() as u64) as usize;
+        line.push_str(&suggestions[pick]);
     }
+    line
 }
 
-/// An alternative: one child drawn uniformly — every child has
-/// nonzero probability.
-pub struct Alt<'a>(pub &'a [&'a dyn Node]);
-
-impl Node for Alt<'_> {
-    fn walk(&self, w: &mut Walk) {
-        if self.0.is_empty() {
-            return;
-        }
-        let idx = (w.rng.next_u64() % self.0.len() as u64) as usize;
-        self.0[idx].walk(w);
+/// Adapt a FULL-LINE completer (servatui's shape: it returns whole
+/// candidate lines for a prefix) into the component suggester
+/// [`type_out`] walks: each candidate line becomes the suffix it
+/// would append. Candidates that do not extend the prefix are
+/// dropped — they are not reachable components.
+pub fn full_line_suggester<'a>(
+    completer: &'a dyn Fn(&str) -> Vec<String>,
+) -> impl Fn(&str) -> Vec<String> + 'a {
+    move |prefix: &str| {
+        completer(prefix)
+            .into_iter()
+            .filter_map(|line| {
+                line.strip_prefix(prefix)
+                    .map(|suffix| suffix.to_string())
+            })
+            .collect()
     }
-}
-
-/// An optional child: taken or skipped, both with nonzero
-/// probability. `p_take_num`/`p_take_den` is the chance of taking
-/// (must be strictly between 0 and the denominator, keeping both
-/// edges nonzero).
-pub struct Opt<'a> {
-    pub node: &'a dyn Node,
-    pub p_take_num: u64,
-    pub p_take_den: u64,
-}
-
-impl Node for Opt<'_> {
-    fn walk(&self, w: &mut Walk) {
-        assert!(
-            self.p_take_den > 1 && self.p_take_num > 0 && self.p_take_num < self.p_take_den,
-            "Opt probabilities must keep both edges nonzero"
-        );
-        if w.rng.next_u64() % self.p_take_den < self.p_take_num {
-            self.node.walk(w);
-        }
-    }
-}
-
-/// Repetition: the child zero or more times. Each iteration rolls the
-/// continue/stop edge (both nonzero); the budget also stops the loop,
-/// which is the guard that makes infinite grammars walkable.
-pub struct Rep<'a> {
-    pub node: &'a dyn Node,
-    /// Chance of ONE MORE iteration, as num/den (both edges nonzero:
-    /// 0 < num < den, den > 1).
-    pub p_more_num: u64,
-    pub p_more_den: u64,
-}
-
-impl Node for Rep<'_> {
-    fn walk(&self, w: &mut Walk) {
-        assert!(
-            self.p_more_den > 1 && self.p_more_num > 0 && self.p_more_num < self.p_more_den,
-            "Rep probabilities must keep both edges nonzero"
-        );
-        while w.has_budget() && w.rng.next_u64() % self.p_more_den < self.p_more_num {
-            self.node.walk(w);
-        }
-    }
-}
-
-/// A leaf whose value is computed AT WALK TIME — the node whose edges
-/// may not exist before the walk (live server state, fresh counters,
-/// anything mutable). The closure draws its own randomness and
-/// returns the value; the nonzero-edges contract is the closure's:
-/// every value it can return must be reachable.
-pub struct Dyn(pub DynFn);
-
-impl Node for Dyn {
-    fn walk(&self, w: &mut Walk) {
-        let v = (self.0)(w.rng);
-        let _ = w.append(&v);
-    }
-}
-
-impl fmt::Debug for Dyn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Dyn(..)")
-    }
-}
-
-/// Draw one string from `node`: fresh walk, given rng, given budget.
-pub fn draw(node: &dyn Node, rng: &mut dyn Rng, budget: usize) -> String {
-    let mut w = Walk::new(rng, budget);
-    node.walk(&mut w);
-    w.finish()
 }
 
 #[cfg(test)]
@@ -209,106 +113,131 @@ mod tests {
     /// Determinism: identical seed → byte-identical draws.
     #[test]
     fn draws_are_a_pure_function_of_the_seed() {
-        let tree = Seq(&[
-            &Lit("grant "),
-            &Dyn(Box::new(|rng| format!("id{}", rng.next_u64() % 3))),
-            &Rep { node: &Lit(" x"), p_more_num: 1, p_more_den: 2 },
-        ]);
-        for seed in 0..50u64 {
-            let a = draw(&tree, &mut SplitMix64(seed), 32);
-            let b = draw(&tree, &mut SplitMix64(seed), 32);
+        let suggest = full_line_suggester(&|prefix: &str| {
+            // "cmd " then words "a"/"b"/"c" — a tiny command grammar.
+            if prefix.is_empty() {
+                vec!["cmd ".to_string()]
+            } else if let Some(rest) = prefix.strip_prefix("cmd ") {
+                if rest.is_empty() {
+                    vec!["cmd a".to_string(), "cmd b".to_string()]
+                } else {
+                    vec![format!("cmd {rest} c")]
+                }
+            } else {
+                Vec::new()
+            }
+        });
+        for seed in 0..100u64 {
+            let a = type_out("", &suggest, &mut SplitMix64(seed), 8, 10, 1000);
+            let b = type_out("", &suggest, &mut SplitMix64(seed), 8, 10, 1000);
             assert_eq!(a, b, "seed {seed} must reproduce");
         }
     }
 
-    /// Every Alt edge is drawn across seeds (nonzero probability).
+    /// Every suggestion is drawn across seeds (nonzero probability),
+    /// and stopping mid-grammar also happens (nonzero) — including
+    /// the empty stop before the first component.
     #[test]
-    fn every_alt_edge_is_reachable() {
-        let words: [&dyn Node; 4] =
-            [&Lit("reset"), &Lit("remove"), &Lit("rotate"), &Lit("grant")];
-        let tree = Alt(&words);
-        let mut seen = [false; 4];
-        for seed in 0..400u64 {
-            let s = draw(&tree, &mut SplitMix64(seed), 4);
-            match s.as_str() {
-                "reset" => seen[0] = true,
-                "remove" => seen[1] = true,
-                "rotate" => seen[2] = true,
-                "grant" => seen[3] = true,
-                other => panic!("not an edge: {other}"),
+    fn every_suggestion_and_stopping_are_reachable() {
+        let suggest = |prefix: &str| {
+            if prefix.is_empty() {
+                vec![" one".to_string(), " two".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        let mut saw_one = false;
+        let mut saw_two = false;
+        let mut saw_stop = false;
+        for seed in 0..200u64 {
+            match type_out("", &suggest, &mut SplitMix64(seed), 7, 10, 10).as_str() {
+                " one" => saw_one = true,
+                " two" => saw_two = true,
+                "" => saw_stop = true,
+                other => panic!("not an outcome of the grammar: {other:?}"),
             }
         }
-        assert!(seen.iter().all(|s| *s), "some Alt edge never drawn: {seen:?}");
+        assert!(saw_one && saw_two && saw_stop);
     }
 
-    /// An infinite grammar — unbounded Rep of a growing Seq — must
-    /// still terminate, bounded only by the budget, and never exceed
-    /// it in appends.
+    /// Suggestions computed at iteration time: each iteration's
+    /// answer comes from a fresh call (word index = call index), so a
+    /// multi-component walk proves successive components were fetched
+    /// live, not cached up front.
     #[test]
-    fn infinite_grammar_terminates_at_the_budget() {
-        // (nested repetition: Rep of Seq(Lit("a"), inner Rep of ...))
-        let inner = Rep { node: &Lit("b"), p_more_num: 9, p_more_den: 10 };
-        let outer = Rep { node: &Seq(&[&Lit("a"), &inner]), p_more_num: 9, p_more_den: 10 };
-        for budget in [1usize, 5, 50] {
-            for seed in 0..100u64 {
-                let s = draw(&outer, &mut SplitMix64(seed), budget);
-                assert!(
-                    s.len() <= 2 * budget,
-                    "appends bounded by budget: {s}"
-                );
+    fn suggestions_are_live() {
+        let mut three_live_rounds = false;
+        let mut total_calls = 0usize;
+        for seed in 0..200u64 {
+            // fresh suggester per walk: the call index restarts, so
+            // the walk's string shows exactly which iteration
+            // produced which component.
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let c = std::sync::Arc::clone(&calls);
+            let suggest = move |_prefix: &str| {
+                let n = c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < 5 {
+                    vec![format!(" w{n}")]
+                } else {
+                    Vec::new()
+                }
+            };
+            let out = type_out("", &suggest, &mut SplitMix64(seed), 9, 10, 10);
+            // call order is observable in the string: w0 then w1 then w2
+            if out.starts_with(" w0 w1 w2") {
+                three_live_rounds = true;
+            }
+            assert!(
+                out.starts_with(" w0") || out.is_empty(),
+                "walk must start with the FIRST call's word or stop: {out:?}"
+            );
+            total_calls += calls.load(std::sync::atomic::Ordering::SeqCst);
+        }
+        assert!(three_live_rounds, "some walk reached three live iterations");
+        assert!(
+            total_calls > 200,
+            "the suggester is called once per iteration across walks"
+        );
+    }
+
+    /// A suggester that always answers terminates anyway — the stop
+    /// roll ends the walk, not the bound.
+    #[test]
+    fn always_answering_terminates_by_the_roll() {
+        let suggest = |_prefix: &str| vec![" x".to_string()];
+        let mut hit_bound = 0;
+        for seed in 0..200u64 {
+            let out = type_out("", &suggest, &mut SplitMix64(seed), 1, 2, 1000);
+            if out.matches(" x").count() >= 1000 {
+                hit_bound += 1;
             }
         }
+        assert_eq!(hit_bound, 0, "stop roll must terminate long before the bound");
     }
 
-    /// Opt takes both branches across seeds (nonzero both ways).
+    /// No suggestions at the start: the start string comes back
+    /// unchanged, zero rng draws consumed.
     #[test]
-    fn opt_takes_and_skips() {
-        let tree = Opt { node: &Lit(" x"), p_take_num: 1, p_take_den: 2 };
-        let mut taken = false;
-        let mut skipped = false;
-        for seed in 0..100u64 {
-            match draw(&tree, &mut SplitMix64(seed), 4).as_str() {
-                " x" => taken = true,
-                "" => skipped = true,
-                other => panic!("not an Opt outcome: {other:?}"),
+    fn no_suggestions_returns_start() {
+        let suggest = |_prefix: &str| Vec::new();
+        let mut rng = SplitMix64(42);
+        assert_eq!(type_out("already done", &suggest, &mut rng, 1, 2, 10), "already done");
+        assert_eq!(rng.0, SplitMix64(42).0, "no randomness consumed");
+    }
+
+    /// The full-line adapter: candidate lines become their suffixes;
+    /// non-extending candidates are dropped.
+    #[test]
+    fn full_line_adapter_appends_suffixes_only() {
+        let completer = |prefix: &str| {
+            if prefix == "mod" {
+                vec!["mode a".to_string(), "mode b".to_string(), "wrong".to_string()]
+            } else {
+                Vec::new()
             }
-        }
-        assert!(taken && skipped);
-    }
-
-    /// Dyn edges are computed at walk time: the same tree over a
-    /// changing source yields the source's CURRENT values.
-    #[test]
-    fn dyn_edges_come_from_walk_time_state() {
-        let live: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(vec!["old".to_string()]));
-        let src = std::sync::Arc::clone(&live);
-        let tree = Dyn(Box::new(move |rng| {
-            // uniform nonzero draw over the live set
-            let names = src.lock().expect("live set").clone();
-            names[(rng.next_u64() % names.len() as u64) as usize].clone()
-        }));
-        let mut saw_old = false;
-        for seed in 0..50u64 {
-            if draw(&tree, &mut SplitMix64(seed), 1) == "old" {
-                saw_old = true;
-            }
-        }
-        assert!(saw_old, "live values are drawn");
-        live.lock().expect("live set").clear();
-        live.lock().expect("live set").push("new".to_string());
-        for seed in 0..50u64 {
-            assert_eq!(draw(&tree, &mut SplitMix64(seed), 1), "new");
-        }
-    }
-
-    /// Zero-children Alt and budget exhaustion are calm: no panic,
-    /// empty/halted output.
-    #[test]
-    fn degenerate_cases_do_not_panic() {
-        let empty = Alt(&[] as &[&dyn Node]);
-        assert_eq!(draw(&empty, &mut SplitMix64(1), 4), "");
-        let tree = Seq(&[&Lit("ab"), &Rep { node: &Lit("c"), p_more_num: 1, p_more_den: 2 }]);
-        assert_eq!(draw(&tree, &mut SplitMix64(7), 0), "");
+        };
+        let suggest = full_line_suggester(&completer);
+        assert_eq!(suggest("mod"), vec!["e a".to_string(), "e b".to_string()]);
+        assert!(suggest("nothing").is_empty());
     }
 }
