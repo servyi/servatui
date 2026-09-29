@@ -22,6 +22,7 @@
 //! The crate has no dependencies and knows nothing of servatui's
 //! types; any project whose surface can answer "what may come next
 //! given this prefix" can be walked (fuzzed, differentially tested).
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 
 /// The randomness a walk consumes. Implement over any RNG (splitmix64,
 /// pcg, ...); determinism of a draw follows from determinism of the
@@ -60,6 +61,12 @@ impl Rng for SplitMix64 {
 ///
 /// Returns the string constructed when the typist stopped: no
 /// suggestions, chose to stop, or (degenerate) the bound.
+///
+/// # Panics
+///
+/// Panics unless `p_continue_den > 1` and
+/// `0 < p_continue_num < p_continue_den` — the both-edges-nonzero
+/// contract.
 pub fn type_out(
     start: &str,
     suggest: &dyn Fn(&str) -> Vec<String>,
