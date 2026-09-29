@@ -1,0 +1,8 @@
+[package]
+name = "servatui-grammar"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Lazy grammar trees walked randomly: every edge nonzero probability, grammars may be infinite. Consumer-side fuzz/input generation for servatui command surfaces and beyond."
+
+[dependencies]
