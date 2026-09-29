@@ -35,7 +35,7 @@ pub use connection::{RawConnection, SocketConnection, TypedConnection};
 pub use console::{BufferConsole, Console, InputSource, NoInput, StdinInput, StdoutConsole};
 #[cfg(feature = "tui")]
 pub use mouse::MouseTracker;
-pub use commands::{ArgKind, ArgSpec, CommandDef, CompletionSource};
+pub use commands::{ArgKind, ArgSpec, CommandDef};
 pub use protocol::{
     Client, ClientBuilder, ClientHead, Plugin, Protocol, Server, ServerBuilder, ShellAction,
 };
