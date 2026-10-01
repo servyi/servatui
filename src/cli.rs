@@ -1,14 +1,14 @@
 //! clap patterns for protocol commands (behind the `cli` feature).
 //!
 //! A protocol command can carry its own clap pattern — plain
-//! [`clap::Arg`]s, the vocabulary clap already defines — so a client
+//! `clap::Arg`s, the vocabulary clap already defines — so a client
 //! COMBINES its full clap tree from the registered protocols plus
 //! whatever local commands and top-level options it adds. Nothing
 //! framework-specific is invented: the args are clap's own (typed
 //! value parsers included), their DECLARATION order is the wire
-//! args-string order (flags included), and [`args_string`]
-//! serializes matched values back in that order via the raw (already
-//! validated) values.
+//! args-string order (flags included), and `args_string` (under the
+//! feature) serializes matched values back in that order via the raw
+//! (already validated) values.
 
 /// The clap subcommand for one protocol command: its name, its help,
 /// and its declared args.
