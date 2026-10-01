@@ -20,6 +20,7 @@ pub const TERMINAL_RESTORE_BYTES: &[u8] =
     b"\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?25h";
 
 pub mod connection;
+pub mod cli;
 pub mod console;
 #[cfg(feature = "tui")]
 pub mod mouse;
@@ -45,3 +46,4 @@ pub use tui::{
     run_tui_managed, run_tui_with_events, run_tui_with_overlay, BuiltinTui, ScrollbarWidget,
     TuiState, WidgetEntry, WIDGET_INPUT, WIDGET_LOG, WIDGET_SCROLLBAR,
 };
+

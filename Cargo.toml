@@ -22,6 +22,7 @@ textwrap = { version = "0.16", default-features = false, features = ["unicode-wi
 base64 = { version = "0.22", optional = true }
 signal-hook = { version = "0.3", optional = true }
 libc = "0.2"
+clap = "4"
 
 [dev-dependencies]
 servatui-display = { path = "display" }
