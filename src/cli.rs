@@ -1,145 +1,94 @@
-//! CLI patterns for protocol commands (behind the `cli` feature).
+//! clap patterns for protocol commands (behind the `cli` feature).
 //!
-//! A protocol command can carry its own [`CliArg`] pattern — the
-//! declarative shape of its command-line arguments — so a client
-//! COMBINES the full clap tree from the registered protocols plus
-//! whatever local commands and top-level options it adds. One
-//! declaration drives the wire parser's grammar documentation, the
-//! tree, and the args-string serialization (values serialize in
-//! declaration order however the user orders flags).
-//!
-//! [`CliArg`]/[`CliKind`] are dependency-free data; only the
-//! tree-building helpers need clap, hence the feature gate.
+//! A protocol command can carry its own clap pattern — plain
+//! [`clap::Arg`]s, the vocabulary clap already defines — so a client
+//! COMBINES its full clap tree from the registered protocols plus
+//! whatever local commands and top-level options it adds. Nothing
+//! framework-specific is invented: the args are clap's own (typed
+//! value parsers included), their DECLARATION order is the wire
+//! args-string order (flags included), and [`args_string`]
+//! serializes matched values back in that order via the raw (already
+//! validated) values.
 
-/// The value shape of one CLI argument — drives clap's value parser.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CliKind {
-    /// A free-form string (a name, a hash).
-    Str,
-    /// A decimal number (ids).
-    U64,
-    /// A filesystem path (a file to read, a socket).
-    Path,
-}
-
-/// One CLI argument of a protocol command, in ARGS-STRING declaration
-/// order: values serialize positionally in this order (flags too —
-/// `add NAME FILE HASH` keeps its order whatever the user's flag
-/// order was), while `flag`-style args present as `--name` on the
-/// command line.
-#[derive(Clone, Copy, Debug)]
-pub struct CliArg {
-    pub name: &'static str,
-    pub kind: CliKind,
-    pub optional: bool,
-    pub flag: bool,
-}
-
-impl CliArg {
-    /// A required positional argument.
-    pub const fn pos(name: &'static str, kind: CliKind) -> Self {
-        Self { name, kind, optional: false, flag: false }
-    }
-    /// An optional positional argument.
-    pub const fn opt(name: &'static str, kind: CliKind) -> Self {
-        Self { name, kind, optional: true, flag: false }
-    }
-    /// A required `--name` option.
-    pub const fn flag(name: &'static str, kind: CliKind) -> Self {
-        Self { name, kind, optional: false, flag: true }
-    }
-    /// An optional `--name` option.
-    pub const fn opt_flag(name: &'static str, kind: CliKind) -> Self {
-        Self { name, kind, optional: true, flag: true }
-    }
-}
-
+/// The clap subcommand for one protocol command: its name, its help,
+/// and its declared args.
 #[cfg(feature = "cli")]
-mod clap_impls {
-    use super::{CliArg, CliKind};
+pub fn subcommand(p: &crate::Protocol) -> clap::Command {
+    let mut sub = clap::Command::new(p.name).about(p.help);
+    for a in &p.clap_args {
+        sub = sub.arg(a.clone());
+    }
+    sub
+}
 
-    /// The clap subcommand for one protocol command: name, help, and
-    /// the typed argument pattern.
-    pub fn subcommand(name: &'static str, help: &'static str, args: &[CliArg]) -> clap::Command {
+/// Serialize matched values into the wire ARGS-STRING, in the
+/// pattern's declaration order. Optional args that were not supplied
+/// simply drop out. Values are the RAW argv values — clap's value
+/// parsers have already validated them at parse time.
+#[cfg(feature = "cli")]
+pub fn args_string(args: &[clap::Arg], matches: &clap::ArgMatches) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for a in args {
+        if let Some(v) = matches
+            .get_raw(a.get_id().as_str())
+            .and_then(|mut raw| raw.next())
+        {
+            parts.push(v.to_string_lossy().into_owned());
+        }
+    }
+    parts.join(" ")
+}
+
+#[cfg(all(feature = "cli", test))]
+mod tests {
+    use super::args_string;
+    use clap::Arg;
+
+    /// The pattern is clap's own vocabulary: declaration order is the
+    /// args-string order (flags included) however the user orders them.
+    #[test]
+    fn serializes_in_declaration_order_regardless_of_user_order() {
+        let args = vec![
+            Arg::new("name").required(true),
+            Arg::new("file").long("file").required(true).value_parser(clap::value_parser!(std::path::PathBuf)),
+            Arg::new("hash").long("hash").required(true),
+        ];
+        let m = subcommand_args("add", "add a secret", &args)
+            .try_get_matches_from(["add", "--hash", "h1", "n1", "--file", "/tmp/f"])
+            .expect("matches");
+        assert_eq!(args_string(&args, &m), "n1 /tmp/f h1");
+    }
+
+    #[test]
+    fn typed_parsers_reject_garbage_and_missing_optionals_drop_out() {
+        let args = vec![
+            Arg::new("id").required(true).value_parser(clap::value_parser!(u64)),
+            Arg::new("why").long("why").required(false),
+        ];
+        let cmd = subcommand_args("grant", "grant one", &args);
+        let m = cmd
+            .try_get_matches_from(["grant", "7"])
+            .expect("matches");
+        assert_eq!(args_string(&args, &m), "7");
+        assert!(
+            subcommand_args("grant", "g", &args)
+                .try_get_matches_from(["grant", "seven"])
+                .is_err(),
+            "u64 parser must reject garbage"
+        );
+        assert!(
+            subcommand_args("grant", "g", &args)
+                .try_get_matches_from(["grant"])
+                .is_err(),
+            "required arg enforced"
+        );
+    }
+
+    fn subcommand_args(name: &'static str, help: &'static str, args: &[Arg]) -> clap::Command {
         let mut sub = clap::Command::new(name).about(help);
         for a in args {
-            let arg = clap_arg(a);
-            sub = sub.arg(arg);
+            sub = sub.arg(a.clone());
         }
         sub
     }
-
-    /// Serialize matched values into the wire ARGS-STRING, in the
-    /// pattern's declaration order. Optional values simply drop out.
-    pub fn args_string(args: &[CliArg], matches: &clap::ArgMatches) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        for a in args {
-            let value = match a.kind {
-                CliKind::U64 => matches.get_one::<u64>(a.name).map(|v| v.to_string()),
-                CliKind::Path => matches
-                    .get_one::<std::path::PathBuf>(a.name)
-                    .map(|p| p.display().to_string()),
-                CliKind::Str => matches.get_one::<String>(a.name).cloned(),
-            };
-            if let Some(v) = value {
-                parts.push(v);
-            }
-        }
-        parts.join(" ")
-    }
-
-    fn clap_arg(a: &CliArg) -> clap::Arg {
-        let mut arg = if a.flag {
-            clap::Arg::new(a.name).long(a.name)
-        } else {
-            clap::Arg::new(a.name)
-        };
-        arg = arg.required(!a.optional);
-        match a.kind {
-            CliKind::U64 => arg.value_parser(clap::value_parser!(u64)),
-            CliKind::Path => arg.value_parser(clap::value_parser!(std::path::PathBuf)),
-            CliKind::Str => arg,
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::super::{CliArg, CliKind};
-        use super::{args_string, subcommand};
-
-        /// The pattern builds a working typed subcommand, and values
-        /// serialize in DECLARATION order regardless of user order.
-        #[test]
-        fn subcommand_parses_and_serializes_in_declaration_order() {
-            let pattern = [
-                CliArg::pos("name", CliKind::Str),
-                CliArg::flag("file", CliKind::Path),
-                CliArg::flag("hash", CliKind::Str),
-            ];
-            let make = || subcommand("add", "add a secret", &pattern);
-            // flags given in reverse order serialize in declared order
-            let m = make()
-                .try_get_matches_from(["add", "--hash", "h1", "n1", "--file", "/tmp/f"])
-                .expect("matches");
-            assert_eq!(args_string(&pattern, &m), "n1 /tmp/f h1");
-        }
-
-        #[test]
-        fn u64_args_reject_garbage_and_optional_values_drop_out() {
-            let pattern = [
-                CliArg::pos("id", CliKind::U64),
-                CliArg::opt_flag("why", CliKind::Str),
-            ];
-            let make = || subcommand("grant", "grant one", &pattern);
-            let m = make().try_get_matches_from(["grant", "7"]).expect("matches");
-            assert_eq!(args_string(&pattern, &m), "7");
-            let err = make().try_get_matches_from(["grant", "seven"]);
-            assert!(err.is_err(), "u64 kind must reject non-numbers");
-            let missing_required = make().try_get_matches_from(["grant"]);
-            assert!(missing_required.is_err(), "required positional enforced");
-        }
-    }
 }
-
-#[cfg(feature = "cli")]
-pub use clap_impls::{args_string, subcommand};

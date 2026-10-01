@@ -269,7 +269,8 @@ where
             steps: self.steps,
             offline: None,
             completer: None,
-            cli_args: &[],
+            #[cfg(feature = "cli")]
+            clap_args: Vec::new(),
         }
     }
 }
@@ -343,7 +344,8 @@ where
             steps: self.steps,
             offline: None,
             completer: None,
-            cli_args: &[],
+            #[cfg(feature = "cli")]
+            clap_args: Vec::new(),
         }
     }
 }
@@ -373,9 +375,11 @@ pub struct Protocol {
     pub offline: Option<OfflineFn>,
     /// Optional tab-completion for argument positions (see [`Completer`]).
     pub(crate) completer: Option<Completer>,
-    /// Optional CLI pattern (see [`crate::cli`]): the declarative
-    /// argument shape a client combines into its full CLI tree.
-    pub cli_args: &'static [crate::cli::CliArg],
+    /// Optional clap pattern (see [`crate::cli`]): plain `clap::Arg`s
+    /// a client combines into its full CLI tree. Feature-gated: only
+    /// CLI-building clients pull clap in at all.
+    #[cfg(feature = "cli")]
+    pub clap_args: Vec<clap::Arg>,
 }
 
 impl Protocol {
@@ -397,11 +401,20 @@ impl Protocol {
         self
     }
 
-    /// Attach this command's CLI pattern (see [`crate::cli`]) —
-    /// consumed by clients that build their CLI from the registered
-    /// protocols.
-    pub fn cli_args(mut self, args: &'static [crate::cli::CliArg]) -> Self {
-        self.cli_args = args;
+    /// Append one clap argument to this command's pattern (see
+    /// [`crate::cli`]) — consumed by clients that build their CLI
+    /// from the registered protocols. Declaration order is the wire
+    /// args-string order.
+    #[cfg(feature = "cli")]
+    pub fn clap_arg(mut self, arg: clap::Arg) -> Self {
+        self.clap_args.push(arg);
+        self
+    }
+
+    /// Set the whole clap pattern at once (see [`Self::clap_arg`]).
+    #[cfg(feature = "cli")]
+    pub fn clap_args(mut self, args: Vec<clap::Arg>) -> Self {
+        self.clap_args = args;
         self
     }
 

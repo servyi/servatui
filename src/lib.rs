@@ -47,4 +47,3 @@ pub use tui::{
     TuiState, WidgetEntry, WIDGET_INPUT, WIDGET_LOG, WIDGET_SCROLLBAR,
 };
 
-pub use cli::{CliArg, CliKind};
