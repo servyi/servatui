@@ -269,7 +269,6 @@ where
             steps: self.steps,
             offline: None,
             completer: None,
-            #[cfg(feature = "cli")]
             clap_args: Vec::new(),
         }
     }
@@ -344,7 +343,6 @@ where
             steps: self.steps,
             offline: None,
             completer: None,
-            #[cfg(feature = "cli")]
             clap_args: Vec::new(),
         }
     }
@@ -376,9 +374,8 @@ pub struct Protocol {
     /// Optional tab-completion for argument positions (see [`Completer`]).
     pub(crate) completer: Option<Completer>,
     /// Optional clap pattern (see [`crate::cli`]): plain `clap::Arg`s
-    /// a client combines into its full CLI tree. Feature-gated: only
-    /// CLI-building clients pull clap in at all.
-    #[cfg(feature = "cli")]
+    /// a client combines into its full CLI tree — and a TUI can read
+    /// the same shapes (e.g. to render a `help` command).
     pub clap_args: Vec<clap::Arg>,
 }
 
@@ -405,14 +402,12 @@ impl Protocol {
     /// [`crate::cli`]) — consumed by clients that build their CLI
     /// from the registered protocols. Declaration order is the wire
     /// args-string order.
-    #[cfg(feature = "cli")]
     pub fn clap_arg(mut self, arg: clap::Arg) -> Self {
         self.clap_args.push(arg);
         self
     }
 
     /// Set the whole clap pattern at once (see [`Self::clap_arg`]).
-    #[cfg(feature = "cli")]
     pub fn clap_args(mut self, args: Vec<clap::Arg>) -> Self {
         self.clap_args = args;
         self
