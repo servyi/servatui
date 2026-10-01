@@ -269,6 +269,7 @@ where
             steps: self.steps,
             offline: None,
             completer: None,
+            cli_args: &[],
         }
     }
 }
@@ -342,6 +343,7 @@ where
             steps: self.steps,
             offline: None,
             completer: None,
+            cli_args: &[],
         }
     }
 }
@@ -371,6 +373,9 @@ pub struct Protocol {
     pub offline: Option<OfflineFn>,
     /// Optional tab-completion for argument positions (see [`Completer`]).
     pub(crate) completer: Option<Completer>,
+    /// Optional CLI pattern (see [`crate::cli`]): the declarative
+    /// argument shape a client combines into its full CLI tree.
+    pub cli_args: &'static [crate::cli::CliArg],
 }
 
 impl Protocol {
@@ -389,6 +394,14 @@ impl Protocol {
         F: Fn(&str) -> Vec<String> + Send + Sync + 'static,
     {
         self.completer = Some(Arc::new(f));
+        self
+    }
+
+    /// Attach this command's CLI pattern (see [`crate::cli`]) —
+    /// consumed by clients that build their CLI from the registered
+    /// protocols.
+    pub fn cli_args(mut self, args: &'static [crate::cli::CliArg]) -> Self {
+        self.cli_args = args;
         self
     }
 

@@ -10,6 +10,8 @@ members = ["display"]
 
 [features]
 default = ["tui"]
+# clap tree-building for protocol-carried CLI patterns (see src/cli.rs)
+cli = ["dep:clap"]
 tui = ["dep:crossterm", "dep:ratatui", "dep:tui-input", "dep:textwrap", "dep:base64", "dep:signal-hook"]
 
 [dependencies]
@@ -22,6 +24,7 @@ textwrap = { version = "0.16", default-features = false, features = ["unicode-wi
 base64 = { version = "0.22", optional = true }
 signal-hook = { version = "0.3", optional = true }
 libc = "0.2"
+clap = { version = "4", optional = true }
 
 [dev-dependencies]
 servatui-display = { path = "display" }
