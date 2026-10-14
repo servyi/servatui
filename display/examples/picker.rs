@@ -5,6 +5,11 @@
 //! The picker is a plain [`DisplayLayer`]: while open it swallows the
 //! navigation keys, so they never reach the input line. The title bar shows
 //! the committed choice.
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph};

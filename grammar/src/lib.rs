@@ -79,6 +79,8 @@ pub fn type_out(
 }
 
 #[cfg(test)]
+#[allow(unknown_lints)] // plain clippy does not know the driver's lints
+#[allow(inline_literal)] // scenario content: the literals ARE the test data
 mod tests {
     use super::*;
     use rand::rngs::SmallRng;

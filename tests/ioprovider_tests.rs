@@ -2,6 +2,11 @@
 //!
 //! These tests use MockCommand from ioprovider to verify that server steps
 //! can execute commands and return results, without real subprocesses.
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use serde::{Deserialize, Serialize};

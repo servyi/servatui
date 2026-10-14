@@ -5,6 +5,16 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
+/// App name used when the caller does not supply one.
+const DEFAULT_APP_NAME: &str = "app";
+/// Error copy for the server dropping the socket.
+const SERVER_CLOSED_MESSAGE: &str = "server closed the connection";
+/// Frame terminator written after each response.
+const LINE_TERMINATOR: &[u8] = b"\n";
+/// A read of zero bytes: the stream is done.
+/// Error copy when a payload carries no data.
+const ERR_NO_DATA: &str = "no data";
+
 /// Raw byte transport — object-safe (no generics).
 pub trait RawConnection {
     fn send_bytes(&mut self, data: &[u8]) -> Result<(), String>;
@@ -37,7 +47,7 @@ fn current_bin_name() -> String {
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or(a.clone())
         })
-        .unwrap_or_else(|| "app".into())
+        .unwrap_or_else(|| DEFAULT_APP_NAME.into())
 }
 
 /// Map a connect(2) failure to an actionable message.
@@ -65,7 +75,7 @@ fn explain_connect_error(path: &Path, err: &std::io::Error) -> String {
 fn explain_io_error(err: &std::io::Error) -> String {
     use std::io::ErrorKind::*;
     match err.kind() {
-        BrokenPipe | ConnectionReset | ConnectionAborted => "server closed the connection".into(),
+        BrokenPipe | ConnectionReset | ConnectionAborted => SERVER_CLOSED_MESSAGE.into(),
         _ => err.to_string(),
     }
 }
@@ -102,7 +112,7 @@ impl RawConnection for SocketConnection {
             .write_all(data)
             .map_err(|e| explain_io_error(&e))?;
         self.stream
-            .write_all(b"\n")
+            .write_all(LINE_TERMINATOR)
             .map_err(|e| explain_io_error(&e))?;
         self.stream.flush().map_err(|e| explain_io_error(&e))?;
         Ok(())
@@ -143,11 +153,13 @@ impl RawConnection for TestEndpoint {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .pop_front()
-            .ok_or("no data".into())
+            .ok_or(ERR_NO_DATA.into())
     }
 }
 
 #[cfg(test)]
+#[allow(unknown_lints)] // plain clippy does not know the driver's lints
+#[allow(inline_literal)] // scenario content: the literals ARE the test data
 mod tests {
     use super::*;
 

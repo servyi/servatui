@@ -12,6 +12,11 @@
 //! sequences (`\x1b[?1006l`, `\x1b[?1049l`) reach the pty.
 //!
 //! Requires: Linux (util-linux script) and the default `tui` feature.
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::fs;

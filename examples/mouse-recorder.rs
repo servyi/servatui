@@ -4,6 +4,11 @@
 //!
 //! Follow on-screen instructions. The mouse position is highlighted in real-time.
 //! Button states shown in footer. Press 'q' to quit and dump events.
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 use std::time::{Duration, Instant};
 
 use crossterm::event::{

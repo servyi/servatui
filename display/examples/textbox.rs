@@ -5,6 +5,11 @@
 //! While open, the textbox swallows printable keys, Backspace, Enter and
 //! Esc — nothing reaches the input line. Enter commits the text into the
 //! title bar; the layer stays a taskbar/Shift+Tab target so `t` reopens it.
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph};

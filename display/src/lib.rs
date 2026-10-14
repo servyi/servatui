@@ -80,6 +80,18 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use servyi_servatui::{WidgetEntry, WIDGET_INPUT};
 
+/// The builtin layer's fixed taskbar slot; where slot numbers start.
+const BUILTIN_SLOT: usize = 0;
+/// The unscrolled offset.
+const SCROLL_TOP: u16 = 0;
+const NEXT_SLOT_START: usize = 1;
+/// Taskbar button height (one row).
+const TASKBAR_BUTTON_H: u16 = 1;
+/// Where the group counter starts.
+const GROUP_START: u64 = 0;
+
+
+
 /// Opaque, continuous layer identity. User layer ids start at 1; 0 is the
 /// builtin bookkeeping layer ([`LayerId::BUILTIN`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -146,12 +158,36 @@ pub trait DisplayLayer {
         EventResult::Pass
     }
 
-    /// Label for this layer's taskbar cell. `'\0'` (the default) falls back
-    /// to a letter assigned by creation order.
+    /// Label for this layer's taskbar cell. [`TAB_LABEL_AUTO`] (the
+    /// default) falls back to a letter assigned by creation order.
     fn tab_label(&self) -> char {
-        '\0'
+        TAB_LABEL_AUTO
     }
 }
+
+/// Taskbar geometry: button width, the stride between slot origins
+/// (width + one gap), the widget name, and the bottom-row offset.
+const TASKBAR_BUTTON_W: u16 = 3;
+const TASKBAR_SLOT_STRIDE: usize = 4;
+/// Gap between adjacent taskbar buttons.
+const TASKBAR_WIDGET_NAME: &str = "display.taskbar";
+const BACKDROP_WIDGET_NAME: &str = "display.backdrop";
+/// Fallback terminal size used before the first real size report.
+const FALLBACK_TERMINAL_W: u16 = 80;
+const FALLBACK_TERMINAL_H: u16 = 24;
+/// The builtin layer: its priority, taskbar label, first slot.
+const BUILTIN_LABEL: char = '*';
+/// Where the slot sequence numbers start.
+/// Taskbar button height (one row).
+/// Color counts at or below this use the muted palette.
+const MUTED_PALETTE_BOUND: usize = 8;
+/// Scroll offset meaning "not scrolled".
+/// Letters assigned to auto-labeled layers: alphabet base and length.
+const AUTO_LABEL_BASE: u64 = b'a' as u64;
+const AUTO_LABEL_ALPHABET: u64 = 26;
+
+/// Taskbar-cell label requesting auto-assignment by creation order.
+const TAB_LABEL_AUTO: char = '\0';
 
 /// Per-layer context handed to [`DisplayLayer`] callbacks.
 pub struct LayerCtx<'a> {
@@ -175,21 +211,35 @@ impl LayerCtx<'_> {
 
 /// Best-effort detection of how many colors the terminal supports
 /// (`COLORTERM` for truecolor, `TERM` suffixes otherwise, 8 as fallback).
+/// `COLORTERM` values meaning full 24-bit color, and the TERM
+/// suffixes for the smaller palettes.
+const COLORTERM_ENV_VAR: &str = "COLORTERM";
+const TERM_ENV_VAR: &str = "TERM";
+const COLORTERM_TRUECOLOR: &str = "truecolor";
+const COLORTERM_24BIT: &str = "24bit";
+const TERM_256_SUFFIX: &str = "256color";
+const TERM_16_SUFFIX: &str = "16color";
+/// Distinct colors of each tier; truecolor is counted as the full
+/// 24-bit space.
+const TRUECOLOR_COUNT: usize = 1 << 24;
+const COLORS_256: usize = 256;
+const COLORS_16: usize = 16;
+const COLORS_FALLBACK: usize = 8;
 pub fn detect_color_count() -> usize {
-    if let Ok(ct) = std::env::var("COLORTERM") {
-        if ct.eq_ignore_ascii_case("truecolor") || ct.eq_ignore_ascii_case("24bit") {
-            return 1 << 24;
+    if let Ok(ct) = std::env::var(COLORTERM_ENV_VAR) {
+        if ct.eq_ignore_ascii_case(COLORTERM_TRUECOLOR) || ct.eq_ignore_ascii_case(COLORTERM_24BIT) {
+            return TRUECOLOR_COUNT;
         }
     }
-    if let Ok(term) = std::env::var("TERM") {
-        if term.contains("256color") {
-            return 256;
+    if let Ok(term) = std::env::var(TERM_ENV_VAR) {
+        if term.contains(TERM_256_SUFFIX) {
+            return COLORS_256;
         }
-        if term.contains("16color") {
-            return 16;
+        if term.contains(TERM_16_SUFFIX) {
+            return COLORS_16;
         }
     }
-    8
+    COLORS_FALLBACK
 }
 
 /// The layer-color palette for a detected color count: with <= 8 colors all
@@ -207,7 +257,7 @@ pub fn palette_for(color_count: usize) -> Vec<Color> {
     ]
     .to_vec();
     // <= 8 colors: use all of them. >= 16: stick to the 8 darker shades.
-    palette.push(if color_count <= 8 { Color::Gray } else { Color::DarkGray });
+    palette.push(if color_count <= MUTED_PALETTE_BOUND { Color::Gray } else { Color::DarkGray });
     palette.push(Color::Black);
     palette
 }
@@ -318,7 +368,7 @@ impl<'a> Display<'a> {
                 layer: Box::new(BuiltinLayer { tui: None }),
                 priority: 0,
                 seq: 0,
-                label: '*',
+                label: BUILTIN_LABEL,
             }],
             next_id: 0,
             palette,
@@ -326,13 +376,13 @@ impl<'a> Display<'a> {
             owners: HashMap::new(),
             cached_widgets: HashMap::new(),
             taskbar: Vec::new(),
-            terminal_area: Rect::new(0, 0, 80, 24),
+            terminal_area: Rect::new(0, 0, FALLBACK_TERMINAL_W, FALLBACK_TERMINAL_H),
             builtin_id,
             builtin_tui: None,
             log_sink: None,
-            slot_of: HashMap::from([(builtin_id, 0)]),
+            slot_of: HashMap::from([(builtin_id, BUILTIN_SLOT)]),
             free_slots: Vec::new(),
-            next_slot: 1,
+            next_slot: NEXT_SLOT_START,
         }
     }
 
@@ -365,7 +415,7 @@ impl<'a> Display<'a> {
             for line in lines {
                 tui.state.log_lines.push(line);
             }
-            tui.state.scroll_up = 0;
+            tui.state.scroll_up = SCROLL_TOP;
         }
     }
 
@@ -384,7 +434,9 @@ impl<'a> Display<'a> {
         self.next_id += 1;
         let id = LayerId(self.next_id);
         let label = match layer.tab_label() {
-            '\0' => (b'a' as u64 + (self.next_id - 1) % 26) as u8 as char,
+            TAB_LABEL_AUTO => {
+                (AUTO_LABEL_BASE + (self.next_id - 1) % AUTO_LABEL_ALPHABET) as u8 as char
+            }
             c => c,
         };
         // Stable taskbar slot: recycle a freed one if available.
@@ -481,7 +533,7 @@ impl<'a> Display<'a> {
     /// adjacent integers (ties stay tied).
     fn resort(&mut self) {
         self.slots.sort_by_key(|s| (s.priority, s.seq));
-        let mut group = 0u64;
+        let mut group = GROUP_START;
         let mut last: Option<u64> = None;
         for slot in &mut self.slots {
             if last != Some(slot.priority) {
@@ -632,13 +684,19 @@ impl<'a> Display<'a> {
         // the priority order), 3 cells wide with a 1-column gap, the strip
         // centered horizontally. The topmost layer's button is bold.
         self.taskbar.clear();
-        let row = self.terminal_area.bottom().saturating_sub(1);
-        let total_slots = self.slot_of.values().copied().max().map_or(0, |m| m + 1);
-        let strip_w = if total_slots == 0 {
-            0
-        } else {
-            (total_slots * 4 - 1) as u16 // n buttons * 3 + (n - 1) gaps
-        };
+        let row = self
+            .terminal_area
+            .bottom()
+            .saturating_sub(1);
+        // Strip width: m full strides (button + gap) plus one final
+        // button, or nothing when no slots exist.
+        let strip_w = self
+            .slot_of
+            .values()
+            .copied()
+            .max()
+            .map_or(0, |m| m * TASKBAR_SLOT_STRIDE + TASKBAR_BUTTON_W as usize + 1)
+            as u16;
         let start =
             self.terminal_area.x + (self.terminal_area.width.saturating_sub(strip_w)) / 2;
         let top_id = self.slots.last().map(|s| s.id);
@@ -651,7 +709,12 @@ impl<'a> Display<'a> {
                 continue;
             }
             let s = self.slot_of.get(&slot.id).copied().unwrap_or(i) as u16;
-            let area = Rect::new(start + s * 4, row, 3, 1);
+            let area = Rect::new(
+                    start + s * TASKBAR_SLOT_STRIDE as u16,
+                    row,
+                    TASKBAR_BUTTON_W,
+                    TASKBAR_BUTTON_H,
+                );
             let color = if slot.id == self.builtin_id {
                 Color::DarkGray
             } else {
@@ -662,7 +725,7 @@ impl<'a> Display<'a> {
                 style = style.add_modifier(Modifier::BOLD);
             }
             widgets.push(WidgetEntry {
-                name: "display.taskbar",
+                name: TASKBAR_WIDGET_NAME,
                 widget: Box::new(Paragraph::new(Span::styled(
                     format!("{:^3}", slot.label),
                     style,
@@ -693,7 +756,7 @@ impl<'a> Display<'a> {
             if let Some(color) = backdrop {
                 for w in group.iter() {
                     decorated.push(WidgetEntry {
-                        name: "display.backdrop",
+                        name: BACKDROP_WIDGET_NAME,
                         widget: Box::new(LayerBackdrop { color }),
                         area: w.area,
                     });

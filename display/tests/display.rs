@@ -1,5 +1,10 @@
 //! Headless tests for the display layer stack: routing, priorities,
 //! attribution, underlays, taskbar, grab, and rotation.
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::sync::Arc;

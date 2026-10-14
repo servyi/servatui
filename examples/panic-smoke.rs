@@ -5,6 +5,11 @@
 //! panic during rendering.
 //!
 //! Run: cargo run --features tui --example panic-smoke -- /tmp/x.sock
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let socket = args

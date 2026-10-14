@@ -19,6 +19,9 @@
 
 use std::io::Write;
 
+/// Exit codes for signal deaths add the signal number to this base.
+const SIGNAL_EXIT_BASE: i32 = 128;
+
 /// Restore the terminal: disable mouse capture and the alternate
 /// screen, make the cursor visible, leave raw mode. Best-effort.
 pub(crate) fn restore_terminal() {
@@ -75,7 +78,7 @@ fn install_signal_thread() {
                 // process, so at most one iteration ever runs.
                 if let Some(sig) = signals.forever().next() {
                     restore_terminal();
-                    std::process::exit(128 + sig);
+                    std::process::exit(SIGNAL_EXIT_BASE + sig);
                 }
             });
         }
@@ -83,6 +86,8 @@ fn install_signal_thread() {
 }
 
 #[cfg(test)]
+#[allow(unknown_lints)] // plain clippy does not know the driver's lints
+#[allow(inline_literal)] // scenario content: the literals ARE the test data
 mod tests {
     use super::*;
 
