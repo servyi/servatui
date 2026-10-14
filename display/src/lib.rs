@@ -80,6 +80,12 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use servyi_servatui::{WidgetEntry, WIDGET_INPUT};
 
+/// The builtin layer's fixed taskbar slot.
+const BUILTIN_SLOT: usize = 0;
+/// The unscrolled offset.
+const SCROLL_TOP: u16 = 0;
+
+
 /// Opaque, continuous layer identity. User layer ids start at 1; 0 is the
 /// builtin bookkeeping layer ([`LayerId::BUILTIN`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -168,17 +174,13 @@ const FALLBACK_TERMINAL_H: u16 = 24;
 /// The builtin layer: its priority, taskbar label, first slot.
 const BUILTIN_PRIORITY: u64 = 0;
 const BUILTIN_LABEL: char = '*';
-const BUILTIN_SLOT: usize = 0;
 /// Where the slot sequence numbers start.
-const SEQ_START: u64 = 0;
-const NEXT_ID_START: u64 = 0;
 const GROUP_START: u64 = 0;
 /// Taskbar button height (one row).
 const TASKBAR_BUTTON_H: u16 = 1;
 /// Color counts at or below this use the muted palette.
 const MUTED_PALETTE_BOUND: usize = 8;
 /// Scroll offset meaning "not scrolled".
-const SCROLL_TOP: u16 = 0;
 const NEXT_SLOT_START: usize = 1;
 /// Letters assigned to auto-labeled layers: alphabet base and length.
 const AUTO_LABEL_BASE: u64 = b'a' as u64;
@@ -365,10 +367,10 @@ impl<'a> Display<'a> {
                 id: builtin_id,
                 layer: Box::new(BuiltinLayer { tui: None }),
                 priority: BUILTIN_PRIORITY,
-                seq: SEQ_START,
+                seq: 0,
                 label: BUILTIN_LABEL,
             }],
-            next_id: NEXT_ID_START,
+            next_id: 0,
             palette,
             grabbed: None,
             owners: HashMap::new(),

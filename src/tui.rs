@@ -17,17 +17,26 @@ use crate::console::Console;
 use crate::protocol::Protocol;
 use tui_input::Input;
 
+/// Column origin and wrap-offset start (tuple-element positions the
+/// trivial-zero rules do not reach: plain assignments and tuples).
+const COLUMN_START: u16 = 0;
+const WRAP_OFFSET_START: usize = 0;
+/// The unscrolled offset.
+const SCROLL_TOP: u16 = 0;
+/// Column origin where the tuple field is usize.
+const COLUMN_START_USIZE: usize = 0;
+/// Line-length floor when the line does not exist (else-arm values).
+const LINE_LEN_FLOOR: usize = 0;
+
+
 /// Scroll offsets and steps: the unscrolled offset, per-key steps, and
 /// the poll pacing with/without auto-scroll.
-const SCROLL_TOP: u16 = 0;
-const SCROLL_STEP_LINE: u16 = 1;
 const SCROLL_STEP_FAST: u16 = 3;
 const SCROLL_STEP_JUMP: u16 = 5;
 const AUTO_SCROLL_POLL_MS: u64 = 30;
 const IDLE_POLL_MS: u64 = 100;
 /// Mouse tracking: origin, click counting, double-click window.
 const SCREEN_ORIGIN: (u16, u16) = (0, 0);
-const CLICKS_RESET: u32 = 0;
 const CLICK_SINGLE: u32 = 1;
 const DOUBLE_CLICK_WINDOW_MS: u64 = 500;
 /// Terminal interrogation: the tty, the size query, the reply framing.
@@ -40,19 +49,12 @@ const COLUMNS_ENV_VAR: &str = "COLUMNS";
 const LINES_ENV_VAR: &str = "LINES";
 /// Input polling: interval, readiness, and the read buffer.
 const INPUT_POLL_INTERVAL_MS: i32 = 15;
-const POLL_EVENTS_CLEAR: i16 = 0;
 const READ_FILL: u8 = 0;
 const READ_BUFFER_SIZE: usize = 32;
 /// Dimensions: zero means "no size yet"; the fallback when nothing
 /// better is known.
-const DIMENSION_FLOOR: u16 = 0;
 const FALLBACK_TERMINAL_SIZE: (u16, u16) = (80, 24);
 /// Grid coordinates and offsets.
-const COLUMN_START: u16 = 0;
-const WRAP_OFFSET_START: usize = 0;
-const LAST_INDEX_OFFSET: usize = 1;
-const HISTORY_START: usize = 0;
-const SUGGESTION_FLOOR: usize = 0;
 /// Wrapping: the continuation marker and its fill/newline chars, tab
 /// handling, control-char replacement.
 const CONTINUATION_MARKER: &str = "↪ ";
@@ -71,12 +73,9 @@ const INPUT_CHUNK_INDEX: usize = 1;
 const LOG_TITLE: &str = "Log";
 const CURSOR_BLINK_INTERVAL_MS: u64 = 600;
 /// Scrollbar geometry: right/bottom padding, track minimum height.
-const SB_RIGHT_PAD: u16 = 1;
 const SB_HEIGHT_PAD: u16 = 2;
 const SCROLL_TRACK_MIN_H: usize = 1;
 /// Word scan floor; first row index; row-count floor.
-const WORD_SCAN_FLOOR: usize = 0;
-const FIRST_ROW: usize = 0;
 const ROW_FLOOR: usize = 0;
 /// The single fd polled for input.
 const POLL_FDS_COUNT: u64 = 1;
@@ -92,11 +91,9 @@ const COMMANDS_HEADING: &str = "COMMANDS:";
 const INPUT_TITLE: &str = "Input";
 const LOG_CHUNK_INDEX: usize = 0;
 /// Line-length floor when the line does not exist.
-const LINE_LEN_FLOOR: usize = 0;
 /// Scrollbar button height.
 const SB_BUTTON_H: u16 = 1;
 /// Poll readiness floor (zero or negative: timeout/error).
-const POLL_READY_FLOOR: i32 = 0;
 /// Separator of the size reply's fields.
 const SIZE_FIELD_SEPARATOR: char = ';';
 /// Command line: the builtin commands, the argument separator, and
@@ -172,7 +169,7 @@ impl TuiState {
     pub fn new() -> Self {
         Self {
             log_lines: vec![INTERACTIVE_HINT.into()],
-            scroll_up: SCROLL_TOP,
+            scroll_up: 0,
             selection: None,
             selection_rect: false,
             history: Vec::new(),
@@ -213,7 +210,7 @@ impl Default for MouseState {
         Self {
             selecting: false,
             scrollbar_drag: false,
-            click_count: CLICKS_RESET,
+            click_count: 0,
             last_click_time: Instant::now() - Duration::from_secs(CLICK_GUARD_EPOCH_AGO_SECS),
             last_click_pos: SCREEN_ORIGIN,
             click_mode: ClickMode::Char,
@@ -241,7 +238,7 @@ fn word_boundaries(line: &str, col: usize) -> (usize, usize) {
     }
     let mut start = col;
     let mut end = col;
-    while start > WORD_SCAN_FLOOR && is_word_char(chars[start - 1]) {
+    while start > 0 && is_word_char(chars[start - 1]) {
         start -= 1;
     }
     while end < chars.len() && is_word_char(chars[end]) {
@@ -265,7 +262,7 @@ fn terminal_size_from_env() -> Option<(u16, u16)> {
 fn parse_terminal_size(cols: &str, lines: &str) -> Option<(u16, u16)> {
     let w: u16 = cols.parse().ok()?;
     let h: u16 = lines.parse().ok()?;
-    if w == DIMENSION_FLOOR || h == DIMENSION_FLOOR {
+    if w == 0 || h == 0 {
         return None;
     }
     Some((w, h))
@@ -294,13 +291,13 @@ fn query_csi_18t() -> Option<(u16, u16)> {
     let mut pfd = libc::pollfd {
         fd: tty.as_raw_fd(),
         events: libc::POLLIN,
-        revents: POLL_EVENTS_CLEAR,
+        revents: 0,
     };
     let nfds = POLL_FDS_COUNT;
     let timeout_ms = INPUT_POLL_INTERVAL_MS;
     // SAFETY: `pfd` refers to the open tty file descriptor and is only
     // accessed by this single poll call.
-    if unsafe { libc::poll(&mut pfd, nfds, timeout_ms) } <= POLL_READY_FLOOR {
+    if unsafe { libc::poll(&mut pfd, nfds, timeout_ms) } <= 0 {
         return None;
     }
 
@@ -348,7 +345,7 @@ fn detect_terminal_size() -> (u16, u16) {
     }
     crossterm::terminal::size()
         .ok()
-        .filter(|&(w, h)| w > DIMENSION_FLOOR && h > DIMENSION_FLOOR)
+        .filter(|&(w, h)| w > 0 && h > 0)
         .or_else(terminal_size_from_env)
         .unwrap_or(FALLBACK_TERMINAL_SIZE)
 }
@@ -483,7 +480,7 @@ fn wrap_with_offsets(line: &str, width: usize, indent: &str) -> Vec<(String, usi
         };
         let content = &line[start..end];
         let offset = line[..start].chars().count();
-        let display = if i == FIRST_ROW {
+        let display = if i == 0 {
             content.to_string()
         } else {
             format!("{indent}{content}")
@@ -920,10 +917,10 @@ impl<'a> BuiltinTui<'a> {
                 state.scroll_up = SCROLL_TOP;
             }
             KeyCode::Up if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                state.scroll_up = state.scroll_up.saturating_add(SCROLL_STEP_LINE);
+                state.scroll_up = state.scroll_up.saturating_add(1);
             }
             KeyCode::Down if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                state.scroll_up = state.scroll_up.saturating_sub(SCROLL_STEP_LINE);
+                state.scroll_up = state.scroll_up.saturating_sub(1);
             }
             KeyCode::Char('d')
                 if key.modifiers.contains(KeyModifiers::CONTROL) && input.value().is_empty() =>
@@ -991,7 +988,7 @@ impl<'a> BuiltinTui<'a> {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if !state.history.is_empty() {
                     state.history_idx = Some(match state.history_idx {
-                        Some(HISTORY_START) => HISTORY_START,
+                        Some(0) => 0,
                         Some(i) => i - 1,
                         None => state.history.len() - 1,
                     });
@@ -1059,7 +1056,7 @@ impl<'a> BuiltinTui<'a> {
             }
         } else {
             // Auto-scroll down (towards newer content)
-            if state.scroll_up > SCROLL_TOP {
+            if state.scroll_up > 0 {
                 state.scroll_up -= 1;
             }
             // Extend selection to bottom of viewport
@@ -1133,7 +1130,7 @@ impl<'a> BuiltinTui<'a> {
         let max_scroll = total_rows.saturating_sub(log_height);
         self.state.scroll_up = (self.state.scroll_up as usize).min(max_scroll) as u16;
 
-        let title = if self.state.scroll_up > SCROLL_TOP {
+        let title = if self.state.scroll_up > 0 {
             format!("Log (\u{2191}{} rows)", self.state.scroll_up)
         } else {
             LOG_TITLE.to_string()
@@ -1185,8 +1182,8 @@ impl<'a> BuiltinTui<'a> {
             // Only the column the scrollbar actually paints, so the
             // builtin group's backdrops do not erase the log content.
             area: ratatui::layout::Rect::new(
-                log_area.right().saturating_sub(SB_RIGHT_PAD),
-                log_area.y + SB_RIGHT_PAD,
+                log_area.right().saturating_sub(1),
+                log_area.y + 1,
                 SB_BUTTON_H,
                 log_area.height.saturating_sub(SB_HEIGHT_PAD),
             ),
@@ -1362,7 +1359,7 @@ fn tab_complete(input: &mut Input, comp: &mut CompletionState, protocols: &[Prot
     let confirmed: String = input.value().chars().take(comp.confirmed).collect();
     let options = suggestions_for(protocols, &confirmed);
     let n = options.len();
-    if n == SUGGESTION_FLOOR {
+    if n == 0 {
         comp.index = None;
         comp.suggestions.clear();
         return;
@@ -1373,7 +1370,7 @@ fn tab_complete(input: &mut Input, comp: &mut CompletionState, protocols: &[Prot
     // shown suggestion — modulo the new length — and advance from there,
     // so the visible suggestion always moves.
     let idx = match comp.index {
-        None => HISTORY_START,
+        None => 0,
         Some(i) if comp.suggestions == options => (i + 1) % n,
         Some(i) => {
             let current = comp.suggestions.get(i).cloned();
@@ -1404,7 +1401,7 @@ fn update_selection(
     offsets: &[usize],
 ) {
     // Clamp current col to line width
-    let cur_row = current.0.min(wrapped.len().saturating_sub(LAST_INDEX_OFFSET));
+    let cur_row = current.0.min(wrapped.len().saturating_sub(1));
     // Display length (includes the "↪ " indent): the drag column is a display
     // column, so clamping to the content-only length would clip the last char(s)
     // of a continuation row.
@@ -1567,7 +1564,7 @@ pub fn handle_mouse_event(
                     } else {
                         LINE_LEN_FLOOR
                     };
-                    mouse.anchor = Some((crow, COLUMN_START as usize));
+                    mouse.anchor = Some((crow, COLUMN_START_USIZE));
                     state.selection = Some((crow, COLUMN_START as usize, crow, line_len));
                 }
             }
@@ -1616,7 +1613,7 @@ pub fn handle_mouse_event(
                 return;
             } else if m.row >= inner.y + inner.height {
                 // Auto-scroll down (toward newer content) immediately
-                if state.scroll_up > SCROLL_TOP {
+                if state.scroll_up > 0 {
                     state.scroll_up -= 1;
                 }
                 let new_start = vp
