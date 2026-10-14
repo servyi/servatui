@@ -17,16 +17,32 @@ use crate::console::Console;
 use crate::protocol::Protocol;
 use tui_input::Input;
 
-/// Column origin and wrap-offset start (tuple-element positions the
-/// trivial-zero rules do not reach: plain assignments and tuples).
+/// Poll/single-fd and read-buffer fill.
+const POLL_FDS_COUNT: u64 = 1;
+const READ_FILL: u8 = 0;
+/// Layout: the inner margin, chunk indexes, history start.
+const INNER_MARGIN: u16 = 1;
+const INPUT_CHUNK_INDEX: usize = 1;
+const LOG_CHUNK_INDEX: usize = 0;
+const HISTORY_START: usize = 0;
+/// Column origin / wrap-offset start (tuple-element and assignment
+/// positions the trivial rules do not reach).
 const COLUMN_START: u16 = 0;
+const COLUMN_START_USIZE: usize = 0;
 const WRAP_OFFSET_START: usize = 0;
 /// The unscrolled offset.
 const SCROLL_TOP: u16 = 0;
-/// Column origin where the tuple field is usize.
-const COLUMN_START_USIZE: usize = 0;
-/// Line-length floor when the line does not exist (else-arm values).
+/// Else-arm length floors.
 const LINE_LEN_FLOOR: usize = 0;
+/// Scrollbar track minimum height.
+const SCROLL_TRACK_MIN_H: usize = 1;
+/// A confirmed single click.
+const CLICK_SINGLE: u32 = 1;
+/// Scrollbar button height.
+const SB_BUTTON_H: u16 = 1;
+/// Scrollbar right padding.
+const SB_RIGHT_PAD: u16 = 1;
+
 
 
 /// Scroll offsets and steps: the unscrolled offset, per-key steps, and
@@ -37,7 +53,6 @@ const AUTO_SCROLL_POLL_MS: u64 = 30;
 const IDLE_POLL_MS: u64 = 100;
 /// Mouse tracking: origin, click counting, double-click window.
 const SCREEN_ORIGIN: (u16, u16) = (0, 0);
-const CLICK_SINGLE: u32 = 1;
 const DOUBLE_CLICK_WINDOW_MS: u64 = 500;
 /// Terminal interrogation: the tty, the size query, the reply framing.
 const TTY_PATH: &str = "/dev/tty";
@@ -49,7 +64,6 @@ const COLUMNS_ENV_VAR: &str = "COLUMNS";
 const LINES_ENV_VAR: &str = "LINES";
 /// Input polling: interval, readiness, and the read buffer.
 const INPUT_POLL_INTERVAL_MS: i32 = 15;
-const READ_FILL: u8 = 0;
 const READ_BUFFER_SIZE: usize = 32;
 /// Dimensions: zero means "no size yet"; the fallback when nothing
 /// better is known.
@@ -66,19 +80,14 @@ const CONTROL_FILL: char = ' ';
 const CARRIAGE_RETURN: char = '\r';
 /// Layout: inner margin, input rows, log minimum, chunk index, title,
 /// cursor blink.
-const INNER_MARGIN: u16 = 1;
 const INPUT_ROWS: u16 = 3;
 const LOG_MIN_ROWS: u16 = 3;
-const INPUT_CHUNK_INDEX: usize = 1;
 const LOG_TITLE: &str = "Log";
 const CURSOR_BLINK_INTERVAL_MS: u64 = 600;
 /// Scrollbar geometry: right/bottom padding, track minimum height.
 const SB_HEIGHT_PAD: u16 = 2;
-const SCROLL_TRACK_MIN_H: usize = 1;
 /// Word scan floor; first row index; row-count floor.
-const ROW_FLOOR: usize = 0;
 /// The single fd polled for input.
-const POLL_FDS_COUNT: u64 = 1;
 /// How long before "now" the click guard epoch sits (so the first
 /// click is never a double).
 const CLICK_GUARD_EPOCH_AGO_SECS: u64 = 10;
@@ -89,10 +98,8 @@ const CONTINUATION_WIDTH: usize = 2;
 /// The commands listing heading; input box title; log chunk index.
 const COMMANDS_HEADING: &str = "COMMANDS:";
 const INPUT_TITLE: &str = "Input";
-const LOG_CHUNK_INDEX: usize = 0;
 /// Line-length floor when the line does not exist.
 /// Scrollbar button height.
-const SB_BUTTON_H: u16 = 1;
 /// Poll readiness floor (zero or negative: timeout/error).
 /// Separator of the size reply's fields.
 const SIZE_FIELD_SEPARATOR: char = ';';
@@ -988,7 +995,7 @@ impl<'a> BuiltinTui<'a> {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if !state.history.is_empty() {
                     state.history_idx = Some(match state.history_idx {
-                        Some(0) => 0,
+                        Some(HISTORY_START) => HISTORY_START,
                         Some(i) => i - 1,
                         None => state.history.len() - 1,
                     });
@@ -1139,7 +1146,7 @@ impl<'a> BuiltinTui<'a> {
         let start = total_rows
             .saturating_sub(log_height)
             .saturating_sub(self.state.scroll_up as usize);
-        let visible: Vec<String> = if total_rows > ROW_FLOOR {
+        let visible: Vec<String> = if total_rows > 0 {
             wrapped[start..].to_vec()
         } else {
             vec![]
@@ -1183,7 +1190,7 @@ impl<'a> BuiltinTui<'a> {
             // builtin group's backdrops do not erase the log content.
             area: ratatui::layout::Rect::new(
                 log_area.right().saturating_sub(1),
-                log_area.y + 1,
+                log_area.y + SB_RIGHT_PAD,
                 SB_BUTTON_H,
                 log_area.height.saturating_sub(SB_HEIGHT_PAD),
             ),
@@ -1370,7 +1377,7 @@ fn tab_complete(input: &mut Input, comp: &mut CompletionState, protocols: &[Prot
     // shown suggestion — modulo the new length — and advance from there,
     // so the visible suggestion always moves.
     let idx = match comp.index {
-        None => 0,
+        None => HISTORY_START,
         Some(i) if comp.suggestions == options => (i + 1) % n,
         Some(i) => {
             let current = comp.suggestions.get(i).cloned();

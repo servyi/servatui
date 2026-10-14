@@ -80,10 +80,16 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use servyi_servatui::{WidgetEntry, WIDGET_INPUT};
 
-/// The builtin layer's fixed taskbar slot.
+/// The builtin layer's fixed taskbar slot; where slot numbers start.
 const BUILTIN_SLOT: usize = 0;
 /// The unscrolled offset.
 const SCROLL_TOP: u16 = 0;
+const NEXT_SLOT_START: usize = 1;
+/// Taskbar button height (one row).
+const TASKBAR_BUTTON_H: u16 = 1;
+/// Where the group counter starts.
+const GROUP_START: u64 = 0;
+
 
 
 /// Opaque, continuous layer identity. User layer ids start at 1; 0 is the
@@ -164,24 +170,18 @@ pub trait DisplayLayer {
 const TASKBAR_BUTTON_W: u16 = 3;
 const TASKBAR_SLOT_STRIDE: usize = 4;
 /// Gap between adjacent taskbar buttons.
-const TASKBAR_GAP: usize = 1;
-const BOTTOM_ROW_OFFSET: u16 = 1;
 const TASKBAR_WIDGET_NAME: &str = "display.taskbar";
 const BACKDROP_WIDGET_NAME: &str = "display.backdrop";
 /// Fallback terminal size used before the first real size report.
 const FALLBACK_TERMINAL_W: u16 = 80;
 const FALLBACK_TERMINAL_H: u16 = 24;
 /// The builtin layer: its priority, taskbar label, first slot.
-const BUILTIN_PRIORITY: u64 = 0;
 const BUILTIN_LABEL: char = '*';
 /// Where the slot sequence numbers start.
-const GROUP_START: u64 = 0;
 /// Taskbar button height (one row).
-const TASKBAR_BUTTON_H: u16 = 1;
 /// Color counts at or below this use the muted palette.
 const MUTED_PALETTE_BOUND: usize = 8;
 /// Scroll offset meaning "not scrolled".
-const NEXT_SLOT_START: usize = 1;
 /// Letters assigned to auto-labeled layers: alphabet base and length.
 const AUTO_LABEL_BASE: u64 = b'a' as u64;
 const AUTO_LABEL_ALPHABET: u64 = 26;
@@ -366,7 +366,7 @@ impl<'a> Display<'a> {
             slots: vec![LayerSlot {
                 id: builtin_id,
                 layer: Box::new(BuiltinLayer { tui: None }),
-                priority: BUILTIN_PRIORITY,
+                priority: 0,
                 seq: 0,
                 label: BUILTIN_LABEL,
             }],
@@ -687,7 +687,7 @@ impl<'a> Display<'a> {
         let row = self
             .terminal_area
             .bottom()
-            .saturating_sub(BOTTOM_ROW_OFFSET);
+            .saturating_sub(1);
         // Strip width: m full strides (button + gap) plus one final
         // button, or nothing when no slots exist.
         let strip_w = self
@@ -695,7 +695,7 @@ impl<'a> Display<'a> {
             .values()
             .copied()
             .max()
-            .map_or(0, |m| m * TASKBAR_SLOT_STRIDE + TASKBAR_BUTTON_W as usize + TASKBAR_GAP)
+            .map_or(0, |m| m * TASKBAR_SLOT_STRIDE + TASKBAR_BUTTON_W as usize + 1)
             as u16;
         let start =
             self.terminal_area.x + (self.terminal_area.width.saturating_sub(strip_w)) / 2;

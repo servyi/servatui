@@ -12,7 +12,6 @@ const SERVER_CLOSED_MESSAGE: &str = "server closed the connection";
 /// Frame terminator written after each response.
 const LINE_TERMINATOR: &[u8] = b"\n";
 /// A read of zero bytes: the stream is done.
-const NO_BYTES_READ: usize = 0;
 /// Error copy when a payload carries no data.
 const ERR_NO_DATA: &str = "no data";
 
@@ -125,7 +124,7 @@ impl RawConnection for SocketConnection {
             .reader
             .read_line(&mut line)
             .map_err(|e| explain_io_error(&e))?;
-        if n == NO_BYTES_READ {
+        if n == 0 {
             return Err("connection closed".into());
         }
         Ok(line.into_bytes())
