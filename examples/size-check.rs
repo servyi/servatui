@@ -1,6 +1,11 @@
 //! Terminal size diagnostic.
 //!
 //! Run: cargo run --example size-check --features tui
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

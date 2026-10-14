@@ -17,6 +17,102 @@ use crate::console::Console;
 use crate::protocol::Protocol;
 use tui_input::Input;
 
+/// Scroll offsets and steps: the unscrolled offset, per-key steps, and
+/// the poll pacing with/without auto-scroll.
+const SCROLL_TOP: u16 = 0;
+const SCROLL_STEP_LINE: u16 = 1;
+const SCROLL_STEP_FAST: u16 = 3;
+const SCROLL_STEP_JUMP: u16 = 5;
+const AUTO_SCROLL_POLL_MS: u64 = 30;
+const IDLE_POLL_MS: u64 = 100;
+/// Mouse tracking: origin, click counting, double-click window.
+const SCREEN_ORIGIN: (u16, u16) = (0, 0);
+const CLICKS_RESET: u32 = 0;
+const CLICK_SINGLE: u32 = 1;
+const DOUBLE_CLICK_WINDOW_MS: u64 = 500;
+/// Terminal interrogation: the tty, the size query, the reply framing.
+const TTY_PATH: &str = "/dev/tty";
+const SIZE_QUERY: &[u8] = b"\x1b[18t";
+const SIZE_RESP_PREFIX: &str = "\x1b[8;";
+const SIZE_RESP_SUFFIX: char = 't';
+/// Env vars sizing heuristics may consult.
+const COLUMNS_ENV_VAR: &str = "COLUMNS";
+const LINES_ENV_VAR: &str = "LINES";
+/// Input polling: interval, readiness, and the read buffer.
+const INPUT_POLL_INTERVAL_MS: i32 = 15;
+const POLL_EVENTS_CLEAR: i16 = 0;
+const READ_FILL: u8 = 0;
+const READ_BUFFER_SIZE: usize = 32;
+/// Dimensions: zero means "no size yet"; the fallback when nothing
+/// better is known.
+const DIMENSION_FLOOR: u16 = 0;
+const FALLBACK_TERMINAL_SIZE: (u16, u16) = (80, 24);
+/// Grid coordinates and offsets.
+const COLUMN_START: u16 = 0;
+const WRAP_OFFSET_START: usize = 0;
+const LAST_INDEX_OFFSET: usize = 1;
+const HISTORY_START: usize = 0;
+const SUGGESTION_FLOOR: usize = 0;
+/// Wrapping: the continuation marker and its fill/newline chars, tab
+/// handling, control-char replacement.
+const CONTINUATION_MARKER: &str = "↪ ";
+const CONT_FILL: char = ' ';
+const NEWLINE: char = '\n';
+const TAB: char = '\t';
+const TAB_EXPANSION: &str = "    ";
+const CONTROL_FILL: char = ' ';
+const CARRIAGE_RETURN: char = '\r';
+/// Layout: inner margin, input rows, log minimum, chunk index, title,
+/// cursor blink.
+const INNER_MARGIN: u16 = 1;
+const INPUT_ROWS: u16 = 3;
+const LOG_MIN_ROWS: u16 = 3;
+const INPUT_CHUNK_INDEX: usize = 1;
+const LOG_TITLE: &str = "Log";
+const CURSOR_BLINK_INTERVAL_MS: u64 = 600;
+/// Scrollbar geometry: right/bottom padding, track minimum height.
+const SB_RIGHT_PAD: u16 = 1;
+const SB_HEIGHT_PAD: u16 = 2;
+const SCROLL_TRACK_MIN_H: usize = 1;
+/// Word scan floor; first row index; row-count floor.
+const WORD_SCAN_FLOOR: usize = 0;
+const FIRST_ROW: usize = 0;
+const ROW_FLOOR: usize = 0;
+/// The single fd polled for input.
+const POLL_FDS_COUNT: u64 = 1;
+/// How long before "now" the click guard epoch sits (so the first
+/// click is never a double).
+const CLICK_GUARD_EPOCH_AGO_SECS: u64 = 10;
+/// The command-line prompt.
+const INPUT_PROMPT: &str = "> ";
+/// Width of the continuation marker cells dimmed after wrap.
+const CONTINUATION_WIDTH: usize = 2;
+/// The commands listing heading; input box title; log chunk index.
+const COMMANDS_HEADING: &str = "COMMANDS:";
+const INPUT_TITLE: &str = "Input";
+const LOG_CHUNK_INDEX: usize = 0;
+/// Line-length floor when the line does not exist.
+const LINE_LEN_FLOOR: usize = 0;
+/// Scrollbar button height.
+const SB_BUTTON_H: u16 = 1;
+/// Poll readiness floor (zero or negative: timeout/error).
+const POLL_READY_FLOOR: i32 = 0;
+/// Separator of the size reply's fields.
+const SIZE_FIELD_SEPARATOR: char = ';';
+/// Command line: the builtin commands, the argument separator, and
+/// what the help echo logs.
+const COMMAND_EXIT: &str = "exit";
+const COMMAND_QUIT: &str = "quit";
+const COMMAND_HELP: &str = "help";
+const ARG_SEPARATOR: char = ' ';
+const HELP_ECHO: &str = "> help";
+/// Word navigation: extra characters counted as word characters.
+const WORD_EXTRA_CHARS: &str = "-./:%_@~";
+
+
+/// First log line of the interactive mode.
+const INTERACTIVE_HINT: &str = "servatui interactive mode. Type 'help' for commands.";
+
 /// Name constants for servatui's built-in widgets.
 pub const WIDGET_LOG: &str = "servatui.log";
 pub const WIDGET_INPUT: &str = "servatui.input";
@@ -75,8 +171,8 @@ impl Default for TuiState {
 impl TuiState {
     pub fn new() -> Self {
         Self {
-            log_lines: vec!["servatui interactive mode. Type 'help' for commands.".into()],
-            scroll_up: 0,
+            log_lines: vec![INTERACTIVE_HINT.into()],
+            scroll_up: SCROLL_TOP,
             selection: None,
             selection_rect: false,
             history: Vec::new(),
@@ -117,9 +213,9 @@ impl Default for MouseState {
         Self {
             selecting: false,
             scrollbar_drag: false,
-            click_count: 0,
-            last_click_time: Instant::now() - Duration::from_secs(10),
-            last_click_pos: (0, 0),
+            click_count: CLICKS_RESET,
+            last_click_time: Instant::now() - Duration::from_secs(CLICK_GUARD_EPOCH_AGO_SECS),
+            last_click_pos: SCREEN_ORIGIN,
             click_mode: ClickMode::Char,
             anchor: None,
             auto_scroll: None,
@@ -129,7 +225,7 @@ impl Default for MouseState {
 
 /// Characters that are part of a "word" (matching VTE/gnome-terminal defaults).
 fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || "-./:%_@~".contains(c)
+    c.is_alphanumeric() || WORD_EXTRA_CHARS.contains(c)
 }
 
 /// Find word boundaries around col in the given line.
@@ -145,7 +241,7 @@ fn word_boundaries(line: &str, col: usize) -> (usize, usize) {
     }
     let mut start = col;
     let mut end = col;
-    while start > 0 && is_word_char(chars[start - 1]) {
+    while start > WORD_SCAN_FLOOR && is_word_char(chars[start - 1]) {
         start -= 1;
     }
     while end < chars.len() && is_word_char(chars[end]) {
@@ -160,8 +256,8 @@ fn word_boundaries(line: &str, col: usize) -> (usize, usize) {
 /// returns the intermediate PTY's size. The shell updates $COLUMNS/$LINES
 /// on SIGWINCH, and these propagate correctly through container boundaries.
 fn terminal_size_from_env() -> Option<(u16, u16)> {
-    let cols = std::env::var("COLUMNS").ok()?;
-    let lines = std::env::var("LINES").ok()?;
+    let cols = std::env::var(COLUMNS_ENV_VAR).ok()?;
+    let lines = std::env::var(LINES_ENV_VAR).ok()?;
     parse_terminal_size(&cols, &lines)
 }
 
@@ -169,7 +265,7 @@ fn terminal_size_from_env() -> Option<(u16, u16)> {
 fn parse_terminal_size(cols: &str, lines: &str) -> Option<(u16, u16)> {
     let w: u16 = cols.parse().ok()?;
     let h: u16 = lines.parse().ok()?;
-    if w == 0 || h == 0 {
+    if w == DIMENSION_FLOOR || h == DIMENSION_FLOOR {
         return None;
     }
     Some((w, h))
@@ -189,32 +285,32 @@ fn query_csi_18t() -> Option<(u16, u16)> {
     let mut tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/dev/tty")
+        .open(TTY_PATH)
         .ok()?;
-    tty.write_all(b"\x1b[18t").ok()?;
+    tty.write_all(SIZE_QUERY).ok()?;
     let _ = tty.flush();
 
     // Wait briefly for the reply (terminals answer in a few ms).
     let mut pfd = libc::pollfd {
         fd: tty.as_raw_fd(),
         events: libc::POLLIN,
-        revents: 0,
+        revents: POLL_EVENTS_CLEAR,
     };
-    let nfds = 1;
-    let timeout_ms = 15;
+    let nfds = POLL_FDS_COUNT;
+    let timeout_ms = INPUT_POLL_INTERVAL_MS;
     // SAFETY: `pfd` refers to the open tty file descriptor and is only
     // accessed by this single poll call.
-    if unsafe { libc::poll(&mut pfd, nfds, timeout_ms) } <= 0 {
+    if unsafe { libc::poll(&mut pfd, nfds, timeout_ms) } <= POLL_READY_FLOOR {
         return None;
     }
 
-    let mut buf = [0u8; 32];
+    let mut buf = [READ_FILL; READ_BUFFER_SIZE];
     let n = tty.read(&mut buf).ok()?;
     let resp = std::str::from_utf8(&buf[..n]).ok()?;
 
     // Reply: CSI 8 ; <rows> ; <cols> t  (xterm reports height before width).
-    let inner = resp.strip_prefix("\x1b[8;")?.strip_suffix('t')?;
-    let mut it = inner.split(';');
+    let inner = resp.strip_prefix(SIZE_RESP_PREFIX)?.strip_suffix(SIZE_RESP_SUFFIX)?;
+    let mut it = inner.split(SIZE_FIELD_SEPARATOR);
     let rows: u16 = it.next()?.parse().ok()?;
     let cols: u16 = it.next()?.parse().ok()?;
     Some((cols, rows))
@@ -235,7 +331,7 @@ fn csi_size_cached() -> Option<(u16, u16)> {
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
     let stale =
-        matches!(*guard, Some((t, _)) if now.duration_since(t) >= Duration::from_millis(500));
+        matches!(*guard, Some((t, _)) if now.duration_since(t) >= Duration::from_millis(DOUBLE_CLICK_WINDOW_MS));
     if stale || guard.is_none() {
         *guard = Some((now, query_csi_18t()));
     }
@@ -252,9 +348,9 @@ fn detect_terminal_size() -> (u16, u16) {
     }
     crossterm::terminal::size()
         .ok()
-        .filter(|&(w, h)| w > 0 && h > 0)
+        .filter(|&(w, h)| w > DIMENSION_FLOOR && h > DIMENSION_FLOOR)
         .or_else(terminal_size_from_env)
-        .unwrap_or((80, 24))
+        .unwrap_or(FALLBACK_TERMINAL_SIZE)
 }
 
 /// A ratatui backend wrapper that reports [`detect_terminal_size`] from its
@@ -346,7 +442,7 @@ fn row_content(row: &str) -> (&str, usize) {
     const INDENT: &str = "↪ ";
     match row.strip_prefix(INDENT) {
         Some(content) => (content, INDENT.chars().count()),
-        None => (row, 0),
+        None => (row, COLUMN_START as usize),
     }
 }
 
@@ -368,7 +464,7 @@ fn wrap_with_offsets(line: &str, width: usize, indent: &str) -> Vec<(String, usi
     let separator = WordSeparator::new();
     let splitter = WordSplitter::HyphenSplitter;
     let words = split_words(separator.find_words(line), &splitter);
-    let broken = break_words(words, line_widths[1]);
+    let broken = break_words(words, line_widths[INPUT_CHUNK_INDEX]);
     let groups = WrapAlgorithm::new().wrap(&broken, &line_widths);
 
     let base = line.as_ptr() as usize;
@@ -381,13 +477,13 @@ fn wrap_with_offsets(line: &str, width: usize, indent: &str) -> Vec<(String, usi
             ),
             _ => {
                 // Empty group (e.g. leading-whitespace lines): an empty row.
-                rows.push((String::new(), 0));
+                rows.push((String::new(), WRAP_OFFSET_START));
                 continue;
             }
         };
         let content = &line[start..end];
         let offset = line[..start].chars().count();
-        let display = if i == 0 {
+        let display = if i == FIRST_ROW {
             content.to_string()
         } else {
             format!("{indent}{content}")
@@ -395,7 +491,7 @@ fn wrap_with_offsets(line: &str, width: usize, indent: &str) -> Vec<(String, usi
         rows.push((display, offset));
     }
     if rows.is_empty() {
-        rows.push((String::new(), 0));
+        rows.push((String::new(), WRAP_OFFSET_START));
     }
     rows
 }
@@ -449,7 +545,7 @@ pub fn extract_selection(
                 result.extend(&chars[start - off..end - off]);
             }
             if row < er {
-                result.push('\n');
+                result.push(NEWLINE);
             }
         }
     } else {
@@ -462,7 +558,7 @@ pub fn extract_selection(
             let col_start = if row == sr {
                 sc.saturating_sub(indent).min(chars.len())
             } else {
-                0
+                LINE_LEN_FLOOR
             };
             let col_end = if row == er {
                 ec.saturating_sub(indent).min(chars.len())
@@ -478,9 +574,9 @@ pub fn extract_selection(
                 // is a different original line → newline.
                 let next_cont = wrapped
                     .get(row + 1)
-                    .map(|l| l.starts_with("↪ "))
+                    .map(|l| l.starts_with(CONTINUATION_MARKER))
                     .unwrap_or(false);
-                result.push(if next_cont { ' ' } else { '\n' });
+                result.push(if next_cont { CONT_FILL } else { NEWLINE });
             }
         }
     }
@@ -521,8 +617,8 @@ impl ratatui::widgets::WidgetRef for LogWidget {
             .render(area, buf);
 
         let inner = area.inner(ratatui::layout::Margin {
-            horizontal: 1,
-            vertical: 1,
+            horizontal: INNER_MARGIN,
+            vertical: INNER_MARGIN,
         });
 
         // Selection in ordered form (top-left to bottom-right)
@@ -539,7 +635,7 @@ impl ratatui::widgets::WidgetRef for LogWidget {
                 break;
             }
             let content_row = self.viewport_start + row;
-            let is_cont = line.starts_with("↪ ");
+            let is_cont = line.starts_with(CONTINUATION_MARKER);
             let y = inner.y + row as u16;
             let chars: Vec<char> = line.chars().collect();
 
@@ -590,7 +686,7 @@ impl ratatui::widgets::WidgetRef for LogWidget {
                     if is_selected {
                         let _cell =
                             cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-                    } else if is_cont && col < 2 {
+                    } else if is_cont && col < CONTINUATION_WIDTH {
                         let _cell = cell.set_style(gray);
                     }
                 }
@@ -770,9 +866,9 @@ impl<'a> BuiltinTui<'a> {
     /// Poll interval for the event loop: shorter while auto-scrolling.
     pub fn poll_ms(&self) -> u64 {
         if self.mouse.auto_scroll.is_some() {
-            30
+            AUTO_SCROLL_POLL_MS
         } else {
-            100
+            IDLE_POLL_MS
         }
     }
 
@@ -812,22 +908,22 @@ impl<'a> BuiltinTui<'a> {
         }
         match key.code {
             KeyCode::PageUp => {
-                state.scroll_up = state.scroll_up.saturating_add(5);
+                state.scroll_up = state.scroll_up.saturating_add(SCROLL_STEP_JUMP);
             }
             KeyCode::PageDown => {
-                state.scroll_up = state.scroll_up.saturating_sub(5);
+                state.scroll_up = state.scroll_up.saturating_sub(SCROLL_STEP_JUMP);
             }
             KeyCode::Home => {
                 state.scroll_up = u16::MAX;
             }
             KeyCode::End => {
-                state.scroll_up = 0;
+                state.scroll_up = SCROLL_TOP;
             }
             KeyCode::Up if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                state.scroll_up = state.scroll_up.saturating_add(1);
+                state.scroll_up = state.scroll_up.saturating_add(SCROLL_STEP_LINE);
             }
             KeyCode::Down if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                state.scroll_up = state.scroll_up.saturating_sub(1);
+                state.scroll_up = state.scroll_up.saturating_sub(SCROLL_STEP_LINE);
             }
             KeyCode::Char('d')
                 if key.modifiers.contains(KeyModifiers::CONTROL) && input.value().is_empty() =>
@@ -854,27 +950,27 @@ impl<'a> BuiltinTui<'a> {
                 if trimmed.is_empty() {
                     return true;
                 }
-                if trimmed == "exit" || trimmed == "quit" {
+                if trimmed == COMMAND_EXIT || trimmed == COMMAND_QUIT {
                     self.exit_requested = true;
                     return true;
                 }
-                if trimmed == "help" {
-                    state.log_lines.push("> help".into());
-                    state.log_lines.push("COMMANDS:".into());
+                if trimmed == COMMAND_HELP {
+                    state.log_lines.push(HELP_ECHO.into());
+                    state.log_lines.push(COMMANDS_HEADING.into());
                     for p in self.protocols {
                         state.log_lines.push(format!("  {:<12} {}", p.name, p.help));
                     }
-                    state.scroll_up = 0;
+                    state.scroll_up = SCROLL_TOP;
                     state.selection = None; // Clear on new output
                     return true;
                 }
 
                 state.history.push(line.clone());
                 state.log_lines.push(format!("> {trimmed}"));
-                state.scroll_up = 0;
+                state.scroll_up = SCROLL_TOP;
                 state.selection = None; // Clear on new output
 
-                let (cmd_name, args) = match trimmed.split_once(' ') {
+                let (cmd_name, args) = match trimmed.split_once(ARG_SEPARATOR) {
                     Some((n, r)) => (n, r),
                     None => (trimmed, ""),
                 };
@@ -895,7 +991,7 @@ impl<'a> BuiltinTui<'a> {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if !state.history.is_empty() {
                     state.history_idx = Some(match state.history_idx {
-                        Some(0) => 0,
+                        Some(HISTORY_START) => HISTORY_START,
                         Some(i) => i - 1,
                         None => state.history.len() - 1,
                     });
@@ -956,14 +1052,14 @@ impl<'a> BuiltinTui<'a> {
                     state,
                     mouse,
                     anchor,
-                    (new_start, 0),
+                    (new_start, COLUMN_START as usize),
                     &vp.wrapped,
                     &vp.offsets,
                 );
             }
         } else {
             // Auto-scroll down (towards newer content)
-            if state.scroll_up > 0 {
+            if state.scroll_up > SCROLL_TOP {
                 state.scroll_up -= 1;
             }
             // Extend selection to bottom of viewport
@@ -999,13 +1095,16 @@ impl<'a> BuiltinTui<'a> {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(3)])
+            .constraints([
+                Constraint::Min(LOG_MIN_ROWS),
+                Constraint::Length(INPUT_ROWS),
+            ])
             .split(area);
 
-        let log_area = chunks[0];
+        let log_area = chunks[LOG_CHUNK_INDEX];
         let log_inner = log_area.inner(ratatui::layout::Margin {
-            horizontal: 1,
-            vertical: 1,
+            horizontal: INNER_MARGIN,
+            vertical: INNER_MARGIN,
         });
         let log_height = log_inner.height as usize;
         let inner_width = log_inner.width as usize;
@@ -1015,16 +1114,16 @@ impl<'a> BuiltinTui<'a> {
         let mut wrapped: Vec<String> = Vec::with_capacity(self.state.log_lines.len());
         let mut offsets: Vec<usize> = Vec::with_capacity(self.state.log_lines.len());
         for s in &self.state.log_lines {
-            let clean = s.rsplit_once('\r').map(|(_, last)| last).unwrap_or(s);
+            let clean = s.rsplit_once(CARRIAGE_RETURN).map(|(_, last)| last).unwrap_or(s);
             // Flatten stray control characters (newlines in gate/command
             // output, BEL, escape bytes, ...) to spaces: a log entry must
             // render as one ordinary wrapped line, never as broken glyphs.
             let clean: String = clean
                 .chars()
-                .map(|c| if c.is_control() && c != '\t' { ' ' } else { c })
+                .map(|c| if c.is_control() && c != TAB { CONTROL_FILL } else { c })
                 .collect();
-            let clean = clean.replace('\t', "    ");
-            for (row, off) in wrap_with_offsets(&clean, inner_width, "↪ ") {
+            let clean = clean.replace(TAB, TAB_EXPANSION);
+            for (row, off) in wrap_with_offsets(&clean, inner_width, CONTINUATION_MARKER) {
                 wrapped.push(row);
                 offsets.push(off);
             }
@@ -1034,16 +1133,16 @@ impl<'a> BuiltinTui<'a> {
         let max_scroll = total_rows.saturating_sub(log_height);
         self.state.scroll_up = (self.state.scroll_up as usize).min(max_scroll) as u16;
 
-        let title = if self.state.scroll_up > 0 {
+        let title = if self.state.scroll_up > SCROLL_TOP {
             format!("Log (\u{2191}{} rows)", self.state.scroll_up)
         } else {
-            "Log".to_string()
+            LOG_TITLE.to_string()
         };
 
         let start = total_rows
             .saturating_sub(log_height)
             .saturating_sub(self.state.scroll_up as usize);
-        let visible: Vec<String> = if total_rows > 0 {
+        let visible: Vec<String> = if total_rows > ROW_FLOOR {
             wrapped[start..].to_vec()
         } else {
             vec![]
@@ -1086,15 +1185,15 @@ impl<'a> BuiltinTui<'a> {
             // Only the column the scrollbar actually paints, so the
             // builtin group's backdrops do not erase the log content.
             area: ratatui::layout::Rect::new(
-                log_area.right().saturating_sub(1),
-                log_area.y + 1,
-                1,
-                log_area.height.saturating_sub(2),
+                log_area.right().saturating_sub(SB_RIGHT_PAD),
+                log_area.y + SB_RIGHT_PAD,
+                SB_BUTTON_H,
+                log_area.height.saturating_sub(SB_HEIGHT_PAD),
             ),
         });
 
-        let prompt = "> ";
-        let input_area = chunks[1];
+        let prompt = INPUT_PROMPT;
+        let input_area = chunks[INPUT_CHUNK_INDEX];
         let (confirmed_part, ghost) =
             split_confirmed(self.input.value(), self.completion.confirmed);
         let input_line = if ghost.is_empty() {
@@ -1116,7 +1215,7 @@ impl<'a> BuiltinTui<'a> {
             name: WIDGET_INPUT,
             widget: Box::new(
                 Paragraph::new(input_line)
-                    .block(Block::default().borders(Borders::ALL).title("Input")),
+                    .block(Block::default().borders(Borders::ALL).title(INPUT_TITLE)),
             ),
             area: input_area,
         });
@@ -1143,7 +1242,7 @@ where
 
     loop {
         // Slow flash of the unconfirmed suggestion tail (~600ms phase).
-        if last_blink.elapsed() >= Duration::from_millis(600) {
+        if last_blink.elapsed() >= Duration::from_millis(CURSOR_BLINK_INTERVAL_MS) {
             last_blink = Instant::now();
             blink_on = !blink_on;
         }
@@ -1249,8 +1348,8 @@ fn suggestions_for(protocols: &[Protocol], confirmed: &str) -> Vec<String> {
             .filter(|p| p.name.starts_with(first))
             .map(|p| p.name.to_string())
             .collect();
-        if "help".starts_with(first) && !names.iter().any(|n| n == "help") {
-            names.push("help".to_string());
+        if COMMAND_HELP.starts_with(first) && !names.iter().any(|n| n == COMMAND_HELP) {
+            names.push(COMMAND_HELP.to_string());
         }
         names
     }
@@ -1263,7 +1362,7 @@ fn tab_complete(input: &mut Input, comp: &mut CompletionState, protocols: &[Prot
     let confirmed: String = input.value().chars().take(comp.confirmed).collect();
     let options = suggestions_for(protocols, &confirmed);
     let n = options.len();
-    if n == 0 {
+    if n == SUGGESTION_FLOOR {
         comp.index = None;
         comp.suggestions.clear();
         return;
@@ -1274,7 +1373,7 @@ fn tab_complete(input: &mut Input, comp: &mut CompletionState, protocols: &[Prot
     // shown suggestion — modulo the new length — and advance from there,
     // so the visible suggestion always moves.
     let idx = match comp.index {
-        None => 0,
+        None => HISTORY_START,
         Some(i) if comp.suggestions == options => (i + 1) % n,
         Some(i) => {
             let current = comp.suggestions.get(i).cloned();
@@ -1305,14 +1404,14 @@ fn update_selection(
     offsets: &[usize],
 ) {
     // Clamp current col to line width
-    let cur_row = current.0.min(wrapped.len().saturating_sub(1));
+    let cur_row = current.0.min(wrapped.len().saturating_sub(LAST_INDEX_OFFSET));
     // Display length (includes the "↪ " indent): the drag column is a display
     // column, so clamping to the content-only length would clip the last char(s)
     // of a continuation row.
     let line_len = if cur_row < wrapped.len() {
         wrapped[cur_row].chars().count()
     } else {
-        0
+        LINE_LEN_FLOOR
     };
     let cur_col = current.1.min(line_len);
 
@@ -1345,7 +1444,7 @@ fn update_selection(
             }
         }
         ClickMode::Line => {
-            state.selection = Some((anchor.0, 0, cur_row, line_len));
+            state.selection = Some((anchor.0, COLUMN_START as usize, cur_row, line_len));
         }
     }
 }
@@ -1383,21 +1482,21 @@ pub fn handle_mouse_event(
 
     match m.kind {
         MouseEventKind::ScrollUp if in_log || on_scrollbar => {
-            state.scroll_up = state.scroll_up.saturating_add(3);
+            state.scroll_up = state.scroll_up.saturating_add(SCROLL_STEP_FAST);
         }
         MouseEventKind::ScrollDown if in_log || on_scrollbar => {
-            state.scroll_up = state.scroll_up.saturating_sub(3);
+            state.scroll_up = state.scroll_up.saturating_sub(SCROLL_STEP_FAST);
         }
 
         MouseEventKind::Down(MouseButton::Left) => {
             if on_scrollbar {
                 mouse.scrollbar_drag = true;
                 // Fix: top of scrollbar = top of content = high scroll_up
-                let track_h = (area.height.saturating_sub(2)) as usize;
+                let track_h = (area.height.saturating_sub(SB_HEIGHT_PAD)) as usize;
                 let click_y = (m.row - area.y - 1) as usize;
                 let max_scroll = vp.total_wrapped.saturating_sub(inner.height as usize);
                 state.scroll_up =
-                    max_scroll.saturating_sub(click_y * max_scroll / track_h.max(1)) as u16;
+                    max_scroll.saturating_sub(click_y * max_scroll / track_h.max(SCROLL_TRACK_MIN_H)) as u16;
                 return;
             }
 
@@ -1411,12 +1510,13 @@ pub fn handle_mouse_event(
             // Click counting for double/triple click
             let now = Instant::now();
             let same_pos = mouse.last_click_pos == (m.column, m.row);
-            let fast = now.duration_since(mouse.last_click_time) < Duration::from_millis(500);
+            let fast =
+                now.duration_since(mouse.last_click_time) < Duration::from_millis(DOUBLE_CLICK_WINDOW_MS);
 
             if same_pos && fast {
                 mouse.click_count += 1;
             } else {
-                mouse.click_count = 1;
+                mouse.click_count = CLICK_SINGLE;
             }
             mouse.last_click_time = now;
             mouse.last_click_pos = (m.column, m.row);
@@ -1465,10 +1565,10 @@ pub fn handle_mouse_event(
                     let line_len = if crow < vp.wrapped.len() {
                         vp.wrapped[crow].chars().count()
                     } else {
-                        0
+                        LINE_LEN_FLOOR
                     };
-                    mouse.anchor = Some((crow, 0));
-                    state.selection = Some((crow, 0, crow, line_len));
+                    mouse.anchor = Some((crow, COLUMN_START as usize));
+                    state.selection = Some((crow, COLUMN_START as usize, crow, line_len));
                 }
             }
         }
@@ -1476,13 +1576,13 @@ pub fn handle_mouse_event(
         MouseEventKind::Drag(MouseButton::Left) => {
             if mouse.scrollbar_drag {
                 if on_scrollbar || m.column == scrollbar_col {
-                    let track_h = (area.height.saturating_sub(2)) as usize;
+                    let track_h = (area.height.saturating_sub(SB_HEIGHT_PAD)) as usize;
                     // Clamp at the top of the track: the drag may report a
                     // row on (or above) the top border row.
                     let click_y = m.row.saturating_sub(area.y + 1) as usize;
                     let max_scroll = vp.total_wrapped.saturating_sub(inner.height as usize);
                     state.scroll_up =
-                        max_scroll.saturating_sub(click_y * max_scroll / track_h.max(1)) as u16;
+                        max_scroll.saturating_sub(click_y * max_scroll / track_h.max(SCROLL_TRACK_MIN_H)) as u16;
                 }
                 return;
             }
@@ -1507,7 +1607,7 @@ pub fn handle_mouse_event(
                         state,
                         mouse,
                         anchor,
-                        (new_start, 0),
+                        (new_start, COLUMN_START as usize),
                         &vp.wrapped,
                         &vp.offsets,
                     );
@@ -1516,7 +1616,7 @@ pub fn handle_mouse_event(
                 return;
             } else if m.row >= inner.y + inner.height {
                 // Auto-scroll down (toward newer content) immediately
-                if state.scroll_up > 0 {
+                if state.scroll_up > SCROLL_TOP {
                     state.scroll_up -= 1;
                 }
                 let new_start = vp
@@ -1656,6 +1756,8 @@ impl Console for TuiBufferConsole {
 // ═══════════════════════════════════════════════════════════════
 
 #[cfg(test)]
+#[allow(unknown_lints)] // plain clippy does not know the driver's lints
+#[allow(inline_literal)] // scenario content: the literals ARE the test data
 mod tests {
     use super::*;
 
@@ -2320,11 +2422,11 @@ mod tests {
     #[test]
     fn test_log_inner_area_excludes_borders() {
         // The LogWidget must be given an area that excludes the top/bottom borders.
-        // With Margin { horizontal: 1, vertical: 1 }, a 10-row area gives 8 content rows.
+        // With Margin { horizontal: INNER_MARGIN, vertical: 1 }, a 10-row area gives 8 content rows.
         let area = ratatui::layout::Rect::new(0, 0, 80, 10);
         let inner = area.inner(ratatui::layout::Margin {
-            horizontal: 1,
-            vertical: 1,
+            horizontal: INNER_MARGIN,
+            vertical: INNER_MARGIN,
         });
         assert_eq!(inner.y, 1, "inner should start below top border");
         assert_eq!(inner.height, 8, "inner height should exclude both borders");
@@ -2535,10 +2637,10 @@ mod tests {
             ])
             .split(area);
 
-        let log_area = chunks[0];
+        let log_area = chunks[LOG_CHUNK_INDEX];
         let log_inner = log_area.inner(ratatui::layout::Margin {
-            horizontal: 1,
-            vertical: 1,
+            horizontal: INNER_MARGIN,
+            vertical: INNER_MARGIN,
         });
 
         assert_eq!(log_area.height, 7, "log area should be height-3");
@@ -2558,10 +2660,10 @@ mod tests {
             ])
             .split(area);
 
-        let log_area = chunks[0];
+        let log_area = chunks[LOG_CHUNK_INDEX];
         let log_inner = log_area.inner(ratatui::layout::Margin {
-            horizontal: 1,
-            vertical: 1,
+            horizontal: INNER_MARGIN,
+            vertical: INNER_MARGIN,
         });
 
         assert_eq!(log_area.height, 47, "log area should be height-3");
@@ -2582,8 +2684,8 @@ mod tests {
                 ])
                 .split(area);
             let log_inner = chunks[0].inner(ratatui::layout::Margin {
-                horizontal: 1,
-                vertical: 1,
+                horizontal: INNER_MARGIN,
+                vertical: INNER_MARGIN,
             });
             (log_inner.width, log_inner.height)
         };

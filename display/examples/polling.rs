@@ -21,6 +21,11 @@
 //! clicking either raises it above the other, and Shift+Tab rotates the
 //! stacking. The numbers layer hides its taskbar button while nothing
 //! is pending.
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

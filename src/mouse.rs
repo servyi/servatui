@@ -7,6 +7,11 @@
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+/// Screen position both trackers start at.
+const SCREEN_ORIGIN: (u16, u16) = (0, 0);
+/// Two clicks within this window count as a double click.
+const DOUBLE_CLICK_WINDOW_MS: u64 = 500;
+
 /// Tracks the current state of the mouse across frames.
 ///
 /// Update by calling `process()` for every `Event::Mouse` received.
@@ -33,14 +38,14 @@ pub struct MouseTracker {
 impl Default for MouseTracker {
     fn default() -> Self {
         Self {
-            pos: (0, 0),
+            pos: SCREEN_ORIGIN,
             left: false,
             right: false,
             middle: false,
             modifiers: KeyModifiers::NONE,
             moved_since_press: false,
             last_down_time: None,
-            last_down_pos: (0, 0),
+            last_down_pos: SCREEN_ORIGIN,
         }
     }
 }
@@ -108,7 +113,7 @@ impl MouseTracker {
     /// True if the last click was a double-click (same position, < 500ms).
     pub fn is_double_click(&self) -> bool {
         if let Some(t) = self.last_down_time {
-            t.elapsed() < std::time::Duration::from_millis(500) && self.last_down_pos == self.pos
+            t.elapsed() < std::time::Duration::from_millis(DOUBLE_CLICK_WINDOW_MS) && self.last_down_pos == self.pos
         } else {
             false
         }

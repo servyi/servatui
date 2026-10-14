@@ -22,6 +22,11 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::connection::{RawConnection, TypedConnection};
 use crate::console::{Console, InputSource};
 
+/// Wire-object key carrying an error string.
+const ERROR_FIELD_KEY: &str = "__error__";
+/// Error copy when a plugin receives the wrong context type.
+const ERR_CONTEXT_TYPE_MISMATCH: &str = "context type mismatch";
+
 /// Type-erased parse closure shared across the builder chain.
 type ParseFn = Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>;
 /// Type-erased offline-fallback closure (see [`Protocol::offline`]).
@@ -150,7 +155,9 @@ where
     }
     fn server_exec(&self, input: &[u8], ctx: &dyn Any) -> Result<Vec<u8>, String> {
         let data: T = serde_json::from_slice(input).map_err(|e| e.to_string())?;
-        let ctx = ctx.downcast_ref::<Ctx>().ok_or("context type mismatch")?;
+        let ctx = ctx
+            .downcast_ref::<Ctx>()
+            .ok_or(ERR_CONTEXT_TYPE_MISMATCH)?;
         let result: U = (self.closure)(data, ctx)?;
         serde_json::to_vec(&result).map_err(|e| e.to_string())
     }
@@ -450,7 +457,7 @@ impl Protocol {
                     data = conn.recv_bytes()?;
                     last_server_response = data.clone();
                     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&data) {
-                        if let Some(err) = val.get("__error__").and_then(|v| v.as_str()) {
+                        if let Some(err) = val.get(ERROR_FIELD_KEY).and_then(|v| v.as_str()) {
                             return Err(err.to_string());
                         }
                     }
@@ -483,7 +490,7 @@ impl Protocol {
                         data = output;
                     }
                     Err(e) => {
-                        let _ = conn.send_typed(&serde_json::json!({"__error__": e}));
+                        let _ = conn.send_typed(&serde_json::json!({ERROR_FIELD_KEY: e}));
                         return Err(e);
                     }
                 },

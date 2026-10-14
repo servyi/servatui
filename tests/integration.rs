@@ -1,4 +1,9 @@
 //! Integration test: start a real server, connect a client, verify response.
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use serde::{Deserialize, Serialize};

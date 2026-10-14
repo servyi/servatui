@@ -3,6 +3,11 @@
 //!
 //! Run as server: `cargo run --example lorem -- serve /tmp/lorem.sock`
 //! Run as client: `cargo run --example lorem -- /tmp/lorem.sock`
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 use serde::{Deserialize, Serialize};
 use servyi_servatui::*;
 use std::env;

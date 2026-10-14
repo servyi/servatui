@@ -7,6 +7,13 @@ use crate::connection::{RawConnection, SocketConnection, TypedConnection};
 use crate::console::{BufferConsole, NoInput};
 use crate::protocol::Protocol;
 
+/// Unix mode the socket is created with (server-writable by all).
+const SOCKET_FILE_MODE: u32 = 0o666;
+/// Error fragment identifying a client that went away.
+const ERR_CLOSED_FRAGMENT: &str = "connection closed";
+/// Protocol version this server speaks.
+const SERVER_VERSION: &str = "0.1.0";
+
 /// Server handle — holds protocols and listens on a socket.
 pub struct ServerHandle {
     pub socket: PathBuf,
@@ -29,7 +36,7 @@ impl ServerHandle {
         {
             use std::os::unix::fs::PermissionsExt;
             let _prev =
-                std::fs::set_permissions(&self.socket, std::fs::Permissions::from_mode(0o666)).ok();
+                std::fs::set_permissions(&self.socket, std::fs::Permissions::from_mode(SOCKET_FILE_MODE)).ok();
         }
 
         let protocols = Arc::new(self.protocols);
@@ -82,7 +89,7 @@ impl ServerHandle {
                 }
                 dispatch_protocol(protocols, trimmed, conn, ctx)
             }
-            Err(e) if e.contains("connection closed") => {
+            Err(e) if e.contains(ERR_CLOSED_FRAGMENT) => {
                 // Client disconnected before sending data — not an error.
                 Ok(())
             }
@@ -121,7 +128,7 @@ impl AppBuilder {
     pub fn new(socket: impl AsRef<Path>) -> Self {
         Self {
             socket: socket.as_ref().to_path_buf(),
-            version: "0.1.0".to_string(),
+            version: SERVER_VERSION.to_string(),
             log_path: String::new(),
             protocols: Vec::new(),
         }

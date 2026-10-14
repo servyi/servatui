@@ -7,6 +7,11 @@
 //! - clicking outside a popup's visible box closes it (full-screen modal)
 //! - Shift+Tab rotates through the layers; the taskbar cells are clickable
 //! - typing `exit` still works: keys no popup swallows reach the input line
+
+// Scenario/demo content: the literals are the sample data; the one
+// class the inline_literal policy exempts via allow.
+#![allow(unknown_lints)] // plain clippy does not know the driver's lints
+#![allow(inline_literal)]
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders};
