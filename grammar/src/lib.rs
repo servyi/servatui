@@ -27,11 +27,6 @@
 
 use rand_core::RngCore;
 
-/// Continuation-fraction bounds: the numerator stays positive and
-/// below the denominator, which is at least 2.
-const DENOMINATOR_MIN: u64 = 1;
-const NUMERATOR_FLOOR: u64 = 0;
-
 /// Simulate the autocomplete typist over a suggestion function.
 ///
 /// * `suggest` — given the string so far, the candidate lines it may
@@ -65,9 +60,7 @@ pub fn type_out(
     max_iterations: usize,
 ) -> String {
     assert!(
-        p_continue_den > DENOMINATOR_MIN
-            && p_continue_num > NUMERATOR_FLOOR
-            && p_continue_num < p_continue_den,
+        p_continue_den > 1 && p_continue_num > 0 && p_continue_num < p_continue_den,
         "continue probability must keep both edges nonzero"
     );
     let mut line = start.to_string();

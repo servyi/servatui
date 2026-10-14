@@ -62,9 +62,9 @@ mod tests {
     const ID_WHY: &str = "why";
     const ID_ID: &str = "id";
     const ID_SOCKET: &str = "socket";
-    const FLAG_FILE: &str = "--file";
-    const FLAG_HASH: &str = "--hash";
-    const FLAG_SOCKET: &str = "--socket";
+    fn flag(id: &str) -> String {
+        std::format!("--{id}")
+    }
     const SUB_ADD: &str = "add";
     const ABOUT_ADD: &str = "add a secret";
     const SUB_GRANT: &str = "grant";
@@ -94,9 +94,16 @@ mod tests {
                 .value_parser(clap::value_parser!(std::path::PathBuf)),
             Arg::new(ID_HASH).long(ID_HASH).required(true),
         ];
+        let hash_flag = flag(ID_HASH);
+        let file_flag = flag(ID_FILE);
         let m = subcommand_args(SUB_ADD, ABOUT_ADD, &args)
             .try_get_matches_from([
-                SUB_ADD, FLAG_HASH, SAMPLE_HASH, SAMPLE_NAME, FLAG_FILE, SAMPLE_PATH,
+                SUB_ADD,
+                hash_flag.as_str(),
+                SAMPLE_HASH,
+                SAMPLE_NAME,
+                file_flag.as_str(),
+                SAMPLE_PATH,
             ])
             .expect("matches");
         assert_eq!(args_string(&args, &m), "n1 /tmp/f h1");
@@ -149,7 +156,13 @@ mod tests {
         let make_tree = || clap_tree(top.clone(), &protocols);
         make_tree().debug_assert();
         let m = make_tree()
-            .try_get_matches_from([TOOL_NAME, FLAG_SOCKET, SAMPLE_SOCKET, SUB_GRANT, SAMPLE_ID])
+        .try_get_matches_from([
+            TOOL_NAME,
+            flag(ID_SOCKET).as_str(),
+            SAMPLE_SOCKET,
+            SUB_GRANT,
+            SAMPLE_ID,
+        ])
             .expect("whole tree parses");
         assert_eq!(m.get_one::<String>("socket").map(String::as_str), Some("/s"));
         let (name, sub) = m.subcommand().expect("grant matched");

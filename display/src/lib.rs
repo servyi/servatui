@@ -156,8 +156,9 @@ pub trait DisplayLayer {
 /// Taskbar geometry: button width, the stride between slot origins
 /// (width + one gap), the widget name, and the bottom-row offset.
 const TASKBAR_BUTTON_W: u16 = 3;
-const TOTAL_SLOTS_STRIDE: usize = 1;
 const TASKBAR_SLOT_STRIDE: usize = 4;
+/// Gap between adjacent taskbar buttons.
+const TASKBAR_GAP: usize = 1;
 const BOTTOM_ROW_OFFSET: u16 = 1;
 const TASKBAR_WIDGET_NAME: &str = "display.taskbar";
 const BACKDROP_WIDGET_NAME: &str = "display.backdrop";
@@ -178,10 +179,6 @@ const TASKBAR_BUTTON_H: u16 = 1;
 const MUTED_PALETTE_BOUND: usize = 8;
 /// Scroll offset meaning "not scrolled".
 const SCROLL_TOP: u16 = 0;
-/// Layer-id to palette-index offset.
-const PALETTE_INDEX_OFFSET: usize = 1;
-/// Slot-count floor while no slots exist.
-const SLOT_FLOOR: usize = 0;
 const NEXT_SLOT_START: usize = 1;
 /// Letters assigned to auto-labeled layers: alphabet base and length.
 const AUTO_LABEL_BASE: u64 = b'a' as u64;
@@ -578,7 +575,7 @@ impl<'a> Display<'a> {
         if id == self.builtin_id || self.palette.is_empty() {
             return None;
         }
-        Some(self.palette[((id.0 as usize).saturating_sub(PALETTE_INDEX_OFFSET)) % self.palette.len()])
+        Some(self.palette[((id.0 as usize).saturating_sub(1)) % self.palette.len()])
     }
 
     /// Run one frame inside servatui's overlay closure: sort + collapse
@@ -689,12 +686,15 @@ impl<'a> Display<'a> {
             .terminal_area
             .bottom()
             .saturating_sub(BOTTOM_ROW_OFFSET);
-        let total_slots = self.slot_of.values().copied().max().map_or(SLOT_FLOOR, |m| m + TOTAL_SLOTS_STRIDE);
-        let strip_w = if total_slots == SLOT_FLOOR {
-            SLOT_FLOOR as u16
-        } else {
-            (total_slots * TASKBAR_SLOT_STRIDE - 1) as u16 // n buttons * 3 + (n - 1) gaps
-        };
+        // Strip width: m full strides (button + gap) plus one final
+        // button, or nothing when no slots exist.
+        let strip_w = self
+            .slot_of
+            .values()
+            .copied()
+            .max()
+            .map_or(0, |m| m * TASKBAR_SLOT_STRIDE + TASKBAR_BUTTON_W as usize + TASKBAR_GAP)
+            as u16;
         let start =
             self.terminal_area.x + (self.terminal_area.width.saturating_sub(strip_w)) / 2;
         let top_id = self.slots.last().map(|s| s.id);
