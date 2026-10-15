@@ -272,14 +272,16 @@ fn main() -> std::io::Result<()> {
     println!("// (MouseEventKind, column, row)");
     println!("let events: &[(MouseEventKind, u16, u16)] = &[");
     for e in &events {
+        // Prefix match on the Debug verb, up to but excluding the
+        // closing paren (allowed primitives: `get`).
         let kind_code = match e.kind.as_str() {
-            s if s.starts_with("Down(Left)") => "MouseEventKind::Down(MouseButton::Left)",
-            s if s.starts_with("Up(Left)") => "MouseEventKind::Up(MouseButton::Left)",
-            s if s.starts_with("Drag(Left)") => "MouseEventKind::Drag(MouseButton::Left)",
-            s if s.starts_with("Down(Right)") => "MouseEventKind::Down(MouseButton::Right)",
-            s if s.starts_with("Up(Right)") => "MouseEventKind::Up(MouseButton::Right)",
-            s if s.starts_with("Down(Middle)") => "MouseEventKind::Down(MouseButton::Middle)",
-            s if s.starts_with("Up(Middle)") => "MouseEventKind::Up(MouseButton::Middle)",
+            s if s.get(..9) == Some("Down(Left") => "MouseEventKind::Down(MouseButton::Left)",
+            s if s.get(..7) == Some("Up(Left") => "MouseEventKind::Up(MouseButton::Left)",
+            s if s.get(..9) == Some("Drag(Left") => "MouseEventKind::Drag(MouseButton::Left)",
+            s if s.get(..10) == Some("Down(Right") => "MouseEventKind::Down(MouseButton::Right)",
+            s if s.get(..8) == Some("Up(Right") => "MouseEventKind::Up(MouseButton::Right)",
+            s if s.get(..11) == Some("Down(Middle") => "MouseEventKind::Down(MouseButton::Middle)",
+            s if s.get(..9) == Some("Up(Middle") => "MouseEventKind::Up(MouseButton::Middle)",
             "ScrollUp" => "MouseEventKind::ScrollUp",
             "ScrollDown" => "MouseEventKind::ScrollDown",
             _ => "MouseEventKind::Moved",

@@ -38,10 +38,11 @@ fn lorem_protocol() -> Protocol {
         // suggestion appears as a flashing, unconfirmed tail (Tab cycles,
         // ESC deletes, any other key confirms).
         .complete(|s: &str| {
-            let (head, last) = s.rsplit_once(' ').unwrap_or(("", s));
+            let last = s.rsplit(' ').next().unwrap_or(s);
+            let head = &s[..s.len().saturating_sub(last.len()).saturating_sub(1)];
             ["ipsum", "dolor", "sit"]
                 .iter()
-                .filter(|w| w.starts_with(last))
+                .filter(|w| w.get(..last.len()) == Some(last))
                 .map(|w| {
                     if head.is_empty() {
                         (*w).to_string()

@@ -115,7 +115,8 @@ mod tests {
                 vec!["cmd ".to_string()]
             } else if line == "cmd " {
                 vec!["cmd a".to_string(), "cmd b".to_string()]
-            } else if let Some(rest) = line.strip_prefix("cmd ") {
+            } else if line.get(..4) == Some("cmd ") {
+            let rest = &line[4..];
                 if rest.is_empty() {
                     vec!["cmd a".to_string(), "cmd b".to_string()]
                 } else {

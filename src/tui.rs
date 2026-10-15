@@ -110,6 +110,12 @@ const COMMAND_QUIT: &str = "quit";
 const COMMAND_HELP: &str = "help";
 const ARG_SEPARATOR: char = ' ';
 const HELP_ECHO: &str = "> help";
+/// Prefix match via allowed primitives (no hand-parsing table
+/// entries): same result as `s.starts_with(p)`.
+fn has_prefix(s: &str, p: &str) -> bool {
+    s.get(..p.len()).is_some_and(|head| head == p)
+}
+
 /// Word navigation: extra characters counted as word characters.
 const WORD_EXTRA_CHARS: &str = "-./:%_@~";
 
@@ -444,9 +450,9 @@ fn osc52_paste() {
 /// callers must subtract `indent_len` to index into `content`.
 fn row_content(row: &str) -> (&str, usize) {
     const INDENT: &str = "↪ ";
-    match row.strip_prefix(INDENT) {
-        Some(content) => (content, INDENT.chars().count()),
-        None => (row, COLUMN_START as usize),
+    match row.get(INDENT.len()..) {
+        Some(content) if has_prefix(row, INDENT) => (content, INDENT.chars().count()),
+        _ => (row, COLUMN_START as usize),
     }
 }
 
@@ -578,7 +584,7 @@ pub fn extract_selection(
                 // is a different original line → newline.
                 let next_cont = wrapped
                     .get(row + 1)
-                    .map(|l| l.starts_with(CONTINUATION_MARKER))
+                    .map(|l| has_prefix(l, CONTINUATION_MARKER))
                     .unwrap_or(false);
                 result.push(if next_cont { CONT_FILL } else { NEWLINE });
             }
@@ -639,7 +645,7 @@ impl ratatui::widgets::WidgetRef for LogWidget {
                 break;
             }
             let content_row = self.viewport_start + row;
-            let is_cont = line.starts_with(CONTINUATION_MARKER);
+            let is_cont = has_prefix(line, CONTINUATION_MARKER);
             let y = inner.y + row as u16;
             let chars: Vec<char> = line.chars().collect();
 
@@ -974,8 +980,13 @@ impl<'a> BuiltinTui<'a> {
                 state.scroll_up = SCROLL_TOP;
                 state.selection = None; // Clear on new output
 
-                let (cmd_name, args) = match trimmed.split_once(ARG_SEPARATOR) {
-                    Some((n, r)) => (n, r),
+                // Byte offset of the separator (bytes().position is a
+                // generic iterator method, not a string primitive).
+                let sep = trimmed
+                    .bytes()
+                    .position(|b| b == ARG_SEPARATOR as u8);
+                let (cmd_name, args) = match sep {
+                    Some(b) => (&trimmed[..b], &trimmed[b + ARG_SEPARATOR.len_utf8()..]),
                     None => (trimmed, ""),
                 };
 
@@ -1118,7 +1129,7 @@ impl<'a> BuiltinTui<'a> {
         let mut wrapped: Vec<String> = Vec::with_capacity(self.state.log_lines.len());
         let mut offsets: Vec<usize> = Vec::with_capacity(self.state.log_lines.len());
         for s in &self.state.log_lines {
-            let clean = s.rsplit_once(CARRIAGE_RETURN).map(|(_, last)| last).unwrap_or(s);
+            let clean = s.rsplit(CARRIAGE_RETURN).next().unwrap_or(s);
             // Flatten stray control characters (newlines in gate/command
             // output, BEL, escape bytes, ...) to spaces: a log entry must
             // render as one ordinary wrapped line, never as broken glyphs.
@@ -1305,14 +1316,14 @@ pub(crate) struct CompletionState {
     pub suggestions: Vec<String>,
 }
 
-/// Split `value` at the `confirmed`-th char (char-boundary safe).
+/// Split `value` at the `confirmed`-th char (char-boundary safe:
+/// `get` returns None instead of panicking).
 fn split_confirmed(value: &str, confirmed: usize) -> (&str, &str) {
-    let byte = value
-        .char_indices()
-        .nth(confirmed)
-        .map(|(b, _)| b)
-        .unwrap_or(value.len());
-    value.split_at(byte)
+    let byte: usize = value.chars().take(confirmed).map(char::len_utf8).sum();
+    (
+        value.get(..byte).unwrap_or(value),
+        value.get(byte..).unwrap_or(""),
+    )
 }
 
 /// Confirm the whole input line (any key except Tab does this first).
@@ -1349,10 +1360,10 @@ fn suggestions_for(protocols: &[Protocol], confirmed: &str) -> Vec<String> {
     } else {
         let mut names: Vec<String> = protocols
             .iter()
-            .filter(|p| p.name.starts_with(first))
-            .map(|p| p.name.to_string())
+            .map(|p| p.name.to_owned())
+            .filter(|name| has_prefix(name, first))
             .collect();
-        if COMMAND_HELP.starts_with(first) && !names.iter().any(|n| n == COMMAND_HELP) {
+        if has_prefix(COMMAND_HELP, first) && !names.iter().any(|n| n == COMMAND_HELP) {
             names.push(COMMAND_HELP.to_string());
         }
         names
@@ -1786,7 +1797,7 @@ mod tests {
             .complete(move |confirmed: &str| {
                 suggestions
                     .iter()
-                    .filter(|s| s.starts_with(confirmed))
+                    .filter(|s| has_prefix(s, confirmed))
                     .cloned()
                     .collect()
             })
@@ -1854,7 +1865,7 @@ mod tests {
                 l2.lock()
                     .unwrap()
                     .iter()
-                    .filter(|s| s.starts_with(confirmed))
+                    .filter(|s| has_prefix(s, confirmed))
                     .cloned()
                     .collect()
             })];

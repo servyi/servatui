@@ -624,7 +624,8 @@ fn test_increment_state_persists_across_connections() {
         .expect("increment #1 should succeed");
     assert!(!lines1.is_empty(), "increment #1 returned no output");
     let v1: u32 = lines1[0]
-        .strip_prefix("old=")
+        .get(4..)
+        .filter(|_| lines1[0].get(..4) == Some("old="))
         .and_then(|s| s.parse().ok())
         .expect("increment #1 output should be 'old=N'");
     assert_eq!(v1, 42, "increment #1: expected old=42, got old={v1}");
@@ -635,7 +636,8 @@ fn test_increment_state_persists_across_connections() {
         .expect("increment #2 should succeed");
     assert!(!lines2.is_empty(), "increment #2 returned no output");
     let v2: u32 = lines2[0]
-        .strip_prefix("old=")
+        .get(4..)
+        .filter(|_| lines1[0].get(..4) == Some("old="))
         .and_then(|s| s.parse().ok())
         .expect("increment #2 output should be 'old=N'");
     assert_eq!(
@@ -649,7 +651,8 @@ fn test_increment_state_persists_across_connections() {
         .expect("increment #3 should succeed");
     assert!(!lines3.is_empty(), "increment #3 returned no output");
     let v3: u32 = lines3[0]
-        .strip_prefix("old=")
+        .get(4..)
+        .filter(|_| lines1[0].get(..4) == Some("old="))
         .and_then(|s| s.parse().ok())
         .expect("increment #3 output should be 'old=N'");
     assert_eq!(
@@ -668,7 +671,8 @@ fn test_increment_state_persists_across_connections() {
         .expect("read should succeed");
     assert!(!lines_r.is_empty(), "read returned no output");
     let vr: u32 = lines_r[0]
-        .strip_prefix("value=")
+        .get(6..)
+        .filter(|_| lines_r[0].get(..6) == Some("value="))
         .and_then(|s| s.parse().ok())
         .expect("read output should be 'value=N'");
     assert_eq!(
@@ -811,7 +815,7 @@ fn test_connection_drop_mid_protocol() {
         !lines.is_empty(),
         "server should recover after dropped connection"
     );
-    assert!(lines[0].starts_with("count="));
+    assert!(lines[0].get(..6) == Some("count="));
 }
 
 // ═══════════════════════════════════════════════════════════════
